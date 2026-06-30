@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual env
+.venv/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+
+# Credentials / local runtime config (NEVER commit)
+config.toml
+rt.json
+free_rt.json
+
+legacy/
