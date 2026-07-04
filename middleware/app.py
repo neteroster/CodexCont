@@ -7,16 +7,28 @@ so it is safe in front of all traffic.
 from __future__ import annotations
 
 import contextlib
+import io
 import json
 import logging
 from typing import Any
 
 import httpx
+import zstandard as zstd
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
 
+from .admin import (
+    admin_dashboard,
+    admin_healthz,
+    admin_logs,
+    admin_logs_stream,
+    admin_requests,
+    admin_redirect,
+    admin_status,
+)
+from .engine import engine_analyze, engine_healthz
 from .codex import (
     build_round_payload,
     declares_continue_tool,
@@ -25,10 +37,30 @@ from .codex import (
 )
 from .config import Config
 from .creds import build_upstream_headers, would_inject_authorization
+from .diagnostics import Diagnostics
+from .key_identity import KeyIdentityResolver
 from .proxy import fold_stream, open_passthrough, open_round
 from .store import IdStore
 
 log = logging.getLogger("middleware.app")
+
+
+class BodyDecodeError(ValueError):
+    pass
+
+
+def _decode_request_body(raw: bytes, encoding: str | None) -> bytes:
+    enc = (encoding or "").strip().lower()
+    if not enc or enc == "identity":
+        return raw
+    if enc != "zstd":
+        raise BodyDecodeError(f"unsupported request content-encoding: {enc}")
+
+    try:
+        with zstd.ZstdDecompressor().stream_reader(io.BytesIO(raw)) as reader:
+            return reader.read()
+    except zstd.ZstdError as exc:
+        raise BodyDecodeError("invalid zstd request body") from exc
 
 
 def _header_base(request: Request) -> str | None:
@@ -72,17 +104,36 @@ def _url_is_from_header(cfg: Config, request: Request) -> bool:
 
 
 async def _passthrough(
-    client: httpx.AsyncClient, cfg: Config, request: Request, raw: bytes, url: str
+    client: httpx.AsyncClient,
+    cfg: Config,
+    request: Request,
+    raw: bytes,
+    url: str,
+    diagnostics: Diagnostics | None = None,
+    request_id: str | None = None,
 ):
     """Pure proxy: forward the raw request and stream the raw response back."""
     headers = build_upstream_headers(request.headers.items(), cfg)
-    resp = await open_passthrough(client, url, raw, headers)
+    try:
+        resp = await open_passthrough(client, url, raw, headers)
+    except Exception as exc:
+        if diagnostics and request_id:
+            diagnostics.request_failed(request_id, reason="passthrough_open_error", detail=repr(exc))
+        raise
 
     async def body_iter():
+        failed = False
         try:
             async for chunk in resp.aiter_bytes():
                 yield chunk
+        except Exception as exc:
+            failed = True
+            if diagnostics and request_id:
+                diagnostics.request_failed(request_id, reason="passthrough_stream_error", detail=repr(exc))
+            raise
         finally:
+            if diagnostics and request_id and not failed:
+                diagnostics.request_finished(request_id, status=f"passthrough:{resp.status_code}")
             await resp.aclose()
 
     return StreamingResponse(
@@ -95,21 +146,50 @@ async def _passthrough(
 async def handle_responses(request: Request) -> Response:
     cfg: Config = request.app.state.cfg
     client: httpx.AsyncClient = request.app.state.client
+    diagnostics: Diagnostics = request.app.state.diagnostics
+    key_identity = request.app.state.key_identity.identify_authorization(
+        request.headers.get("authorization")
+    )
+    request_id = diagnostics.request_started(path=request.url.path, key_identity=key_identity)
 
-    raw = await request.body()
+    wire_raw = await request.body()
+    try:
+        raw = _decode_request_body(wire_raw, request.headers.get("content-encoding"))
+    except BodyDecodeError as exc:
+        log.warning(
+            "request body decode failed: content-type=%s content-encoding=%s len=%d error=%s",
+            request.headers.get("content-type"),
+            request.headers.get("content-encoding"),
+            len(wire_raw),
+            exc,
+        )
+        diagnostics.request_failed(request_id, reason="body_decode_error", detail=str(exc))
+        return JSONResponse({"error": str(exc)}, status_code=400)
+
     try:
         body: dict[str, Any] = json.loads(raw)
     except (json.JSONDecodeError, UnicodeDecodeError):
+        log.warning(
+            "invalid JSON body: content-type=%s content-encoding=%s len=%d",
+            request.headers.get("content-type"),
+            request.headers.get("content-encoding"),
+            len(raw),
+        )
+        diagnostics.request_failed(request_id, reason="invalid_json_body")
         return JSONResponse({"error": "invalid JSON body"}, status_code=400)
     if not isinstance(body, dict):
+        diagnostics.request_failed(request_id, reason="non_object_body")
         return JSONResponse({"error": "body must be a JSON object"}, status_code=400)
 
     url = _resolve_upstream_url(cfg, request)
     if url is None:
+        diagnostics.request_update(request_id, model=body.get("model"))
+        diagnostics.request_failed(request_id, reason="missing_responses_api_base")
         return JSONResponse(
             {"error": "Responses-API-Base header is required (upstream mode=header_required)"},
             status_code=400,
         )
+    diagnostics.request_update(request_id, model=body.get("model"), upstream_url=url)
 
     # Safety: never send the proxy's configured credentials to a URL the request
     # itself supplied. If the base came from the header, the request must carry
@@ -119,6 +199,7 @@ async def handle_responses(request: Request) -> Response:
     ):
         log.warning("blocked: Responses-API-Base override without own auth (model=%s)",
                     body.get("model"))
+        diagnostics.request_failed(request_id, reason="blocked_header_override_without_own_auth")
         return JSONResponse(
             {"error": "When overriding the upstream base (Responses-API-Base), the request must "
                       "provide its own Authorization; the proxy will not send its configured "
@@ -148,10 +229,14 @@ async def handle_responses(request: Request) -> Response:
                else "declares-continue_thinking")
         log.info("passthrough (%s): model=%s path=%s url=%s",
                  why, body.get("model"), request.url.path, url)
-        return await _passthrough(client, cfg, request, raw, url)
+        diagnostics.mark_passthrough(request_id, reason=why, model=body.get("model"))
+        return await _passthrough(client, cfg, request, raw, url, diagnostics, request_id)
 
     log.info("fold start: model=%s path=%s url=%s input_items=%d",
              body.get("model"), request.url.path, url, len(body.get("input") or []))
+    diagnostics.mark_fold_start(
+        request_id, model=body.get("model"), path=request.url.path, upstream_url=url
+    )
 
     # repair_followup="stateful": re-insert tool_pair continue pairs after recorded
     # ids (tool_pair only — commentary preserves cross-turn structure via forward_marker).
@@ -180,12 +265,25 @@ async def handle_responses(request: Request) -> Response:
     if resp.status_code >= 400:
         err = await resp.aread()
         await resp.aclose()
+        diagnostics.request_failed(
+            request_id, reason="upstream_http_error", detail={"status_code": resp.status_code}
+        )
         return Response(
             err, status_code=resp.status_code, media_type=resp.headers.get("content-type")
         )
 
     return StreamingResponse(
-        fold_stream(client, cfg, body, headers, resp, request.app.state.id_store, url=url),
+        fold_stream(
+            client,
+            cfg,
+            body,
+            headers,
+            resp,
+            request.app.state.id_store,
+            url=url,
+            diagnostics=diagnostics,
+            request_id=request_id,
+        ),
         media_type="text/event-stream",
     )
 
@@ -205,6 +303,8 @@ def create_app(cfg: Config) -> Starlette:
     @contextlib.asynccontextmanager
     async def lifespan(app: Starlette):
         app.state.cfg = cfg
+        app.state.diagnostics = Diagnostics(max_events=cfg.admin.max_log_events)
+        app.state.key_identity = KeyIdentityResolver(cfg.admin.key_policy_state_path)
         app.state.client = _make_client()
         app.state.id_store = IdStore()
         try:
@@ -213,6 +313,16 @@ def create_app(cfg: Config) -> Starlette:
             await app.state.client.aclose()
 
     routes = [
+        Route("/engine/healthz", engine_healthz, methods=["GET"]),
+        Route("/engine/v1/responses/analyze", engine_analyze, methods=["POST"]),
+        Route("/admin", admin_redirect, methods=["GET"]),
+        Route("/admin/", admin_dashboard, methods=["GET"]),
+        Route("/admin/healthz", admin_healthz, methods=["GET"]),
+        Route("/admin/status", admin_status, methods=["GET"]),
+        Route("/admin/requests", admin_requests, methods=["GET"]),
+        Route("/admin/logs", admin_logs, methods=["GET"]),
+        Route("/admin/logs/stream", admin_logs_stream, methods=["GET"]),
+    ] + [
         Route(path, handle_responses, methods=["POST"]) for path in cfg.server.listen_paths
     ]
     return Starlette(routes=routes, lifespan=lifespan)

@@ -1,0 +1,25 @@
+services:
+  cpa-usage-portal:
+    build:
+      context: ../..
+      dockerfile: deploy/cpa-usage-portal/Dockerfile
+    container_name: cpa-usage-portal
+    restart: unless-stopped
+    networks:
+      - cpa_net
+    environment:
+      CPA_USAGE_PORTAL_KEY_POLICY_STATE: /data/plugin-state/cpa-key-policy-state.json
+      CPA_USAGE_PORTAL_LOCAL_STATE_DB: /data/portal/usage_portal.sqlite
+      CPA_USAGE_PORTAL_CPAMP_URL: http://cpamp:18317
+      CPA_USAGE_PORTAL_CPAMP_ADMIN_KEY_FILE: /run/secrets/cpamp_admin_key
+      CPA_USAGE_PORTAL_SESSION_SECRET_FILE: /run/secrets/session_secret
+      CPA_USAGE_PORTAL_COOKIE_SECURE: "true"
+    volumes:
+      - /opt/codex-stacks/cpa/plugin-state:/data/plugin-state:ro
+      - ./data:/data/portal
+      - ./secrets/cpamp_admin_key:/run/secrets/cpamp_admin_key:ro
+      - ./secrets/session_secret:/run/secrets/session_secret:ro
+
+networks:
+  cpa_net:
+    external: true

@@ -1,0 +1,2 @@
+{"file": ".trellis/spec/backend/codex-continuation-contracts.md", "reason": "Check hash separation, no-secret projections, route blocking, and small-disk rollout constraints"}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "General backend quality gate placeholder for local tests and deployment verification"}

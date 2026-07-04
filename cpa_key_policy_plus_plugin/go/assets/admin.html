@@ -1,0 +1,834 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>CPA Key Policy+</title>
+  <style>{{CSS}}</style>
+  <style>
+    .admin-shell { width: min(1800px, calc(100% - 32px)); }
+    .admin-board {
+      display: grid;
+      grid-template-columns: minmax(720px, 1fr) minmax(420px, 520px);
+      gap: 14px;
+      align-items: start;
+    }
+    .key-list-table { min-width: 900px; table-layout: fixed; }
+    .key-list-table th:nth-child(1) { width: 245px; }
+    .key-list-table th:nth-child(2) { width: 150px; }
+    .key-list-table th:nth-child(3) { width: 190px; }
+    .key-list-table th:nth-child(4) { width: 130px; }
+    .key-list-table th:nth-child(5) { width: 170px; }
+    .key-row { cursor: pointer; }
+    .key-row.selected { background: rgba(59, 130, 246, .08); }
+    .key-title { display: grid; gap: 4px; min-width: 0; }
+    .key-title strong,
+    .key-title small { overflow-wrap: anywhere; }
+    .stack { display: grid; gap: 6px; }
+    .tag-row { display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; }
+    .tag {
+      display: inline-flex;
+      align-items: center;
+      min-height: 24px;
+      padding: 0 8px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: #1a2230;
+      color: #cbd5e1;
+      font-size: 12px;
+      font-weight: 720;
+      white-space: nowrap;
+    }
+    .tag.warn { color: #ffd893; border-color: rgba(244, 185, 66, .3); background: var(--amber-soft); }
+    .tag.ok { color: #a9f2a2; border-color: rgba(104, 214, 95, .28); background: var(--green-soft); }
+    .tag.bad { color: #ffb8b8; border-color: rgba(248, 113, 113, .3); background: var(--red-soft); }
+    .mini-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 6px;
+    }
+    .quota-mini {
+      min-width: 0;
+      padding: 7px 8px;
+      border: 1px solid rgba(40, 52, 72, .78);
+      border-radius: 8px;
+      background: #111722;
+    }
+    .quota-mini .quota-top {
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 780;
+    }
+    .quota-mini .quota-value { margin-top: 4px; font-weight: 800; }
+    .bar {
+      height: 5px;
+      margin-top: 7px;
+      border-radius: 999px;
+      background: #0e1420;
+      overflow: hidden;
+    }
+    .bar > span {
+      display: block;
+      height: 100%;
+      width: 0;
+      border-radius: inherit;
+      background: var(--blue);
+    }
+    .bar.warn > span { background: var(--amber); }
+    .bar.bad > span { background: var(--red); }
+    .detail-panel { position: sticky; top: 14px; }
+    .detail-body { display: grid; gap: 12px; }
+    .field-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+    .field-grid label,
+    .field {
+      display: grid;
+      gap: 6px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 720;
+    }
+    .field-grid .span-2 { grid-column: span 2; }
+    .field-grid input,
+    .field-grid select { width: 100%; min-width: 0; }
+    .quota-editor { display: grid; gap: 8px; }
+    .quota-card {
+      display: grid;
+      grid-template-columns: 76px 1fr 118px;
+      gap: 10px;
+      align-items: center;
+      padding: 9px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #111722;
+    }
+    .quota-card input { width: 100%; min-width: 0; }
+    .section-title {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding-top: 4px;
+    }
+    .toggle-line {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 720;
+    }
+    .toggle-line input { min-height: auto; }
+    .modal-backdrop {
+      position: fixed;
+      inset: 0;
+      z-index: 40;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+      background: rgba(5, 10, 18, .72);
+    }
+    .modal-backdrop.open { display: flex; }
+    .modal {
+      width: min(980px, 100%);
+      max-height: min(88vh, 920px);
+      display: flex;
+      flex-direction: column;
+      border: 1px solid var(--line-strong);
+      border-radius: 8px;
+      background: #151b27;
+      box-shadow: 0 24px 70px rgba(0, 0, 0, .42);
+      overflow: hidden;
+    }
+    .modal-head,
+    .modal-foot {
+      padding: 14px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      border-bottom: 1px solid var(--line);
+    }
+    .modal-foot {
+      border-top: 1px solid var(--line);
+      border-bottom: 0;
+      justify-content: flex-end;
+    }
+    .modal-body { padding: 14px; overflow: auto; }
+    .selector-layout {
+      display: grid;
+      grid-template-columns: minmax(280px, .95fr) minmax(360px, 1.05fr);
+      gap: 12px;
+      margin-top: 12px;
+    }
+    .model-list,
+    .price-list {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #111722;
+      overflow: hidden;
+    }
+    .model-list-head,
+    .price-list-head {
+      min-height: 44px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 10px;
+      border-bottom: 1px solid var(--line);
+    }
+    .model-items { max-height: 390px; overflow: auto; padding: 6px; }
+    .model-option {
+      display: grid;
+      grid-template-columns: 24px 1fr;
+      gap: 8px;
+      align-items: start;
+      padding: 8px;
+      border-radius: 7px;
+      cursor: pointer;
+    }
+    .model-option:hover { background: rgba(148, 163, 184, .07); }
+    .model-option input { min-height: auto; margin-top: 3px; }
+    .model-option strong { font-size: 13px; overflow-wrap: anywhere; }
+    .selected-chips { min-height: 34px; display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 0 0; }
+    .chip-button { border: 0; min-height: 20px; padding: 0 2px; background: transparent; color: inherit; font-weight: 900; }
+    .price-table { width: 100%; min-width: 640px; table-layout: fixed; }
+    .price-table th:nth-child(1) { width: 210px; }
+    .price-table input { width: 100%; min-width: 0; }
+    .notice {
+      margin-top: 10px;
+      padding: 10px;
+      border: 1px solid rgba(244, 185, 66, .26);
+      border-radius: 8px;
+      background: var(--amber-soft);
+      color: #ffd893;
+      font-size: 12px;
+    }
+    @media (max-width: 1180px) {
+      .admin-board { grid-template-columns: 1fr; }
+      .detail-panel { position: static; }
+    }
+    @media (max-width: 820px) {
+      .admin-shell { width: min(1800px, calc(100% - 20px)); }
+      .field-grid,
+      .selector-layout { grid-template-columns: 1fr; }
+      .field-grid .span-2 { grid-column: auto; }
+      .quota-card { grid-template-columns: 1fr; }
+      .modal-backdrop { align-items: stretch; padding: 10px; }
+      .modal { max-height: calc(100vh - 20px); }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell admin-shell">
+    <header class="topbar">
+      <div class="brand">
+        <div class="mark">K+</div>
+        <div>
+          <h1>CPA Key Policy+</h1>
+          <p class="subtitle">Key 策略层：读取 CPA 原生 Key，只编辑 RPM、模型、价格和额度窗口</p>
+        </div>
+      </div>
+      <div class="toolbar">
+        <span id="sync" class="chip stream info"><span class="dot"></span>准备同步</span>
+        <button id="save" class="btn primary" type="button">保存策略</button>
+        <button id="refresh" class="btn" type="button">刷新</button>
+      </div>
+    </header>
+
+    <section class="metrics" id="metrics"></section>
+
+    <section class="admin-board">
+      <section class="panel">
+        <div class="panel-head">
+          <div>
+            <h2>Key 策略</h2>
+            <p>Key 的新增、删除、复制和别名在 CPA/CPAMP 管理；这里仅维护 Plus 策略。</p>
+          </div>
+          <button id="reload-models" class="btn mini" type="button">重新获取模型</button>
+        </div>
+        <div class="table-wrap">
+          <table class="data-table key-list-table">
+            <thead>
+              <tr>
+                <th>来源/别名</th>
+                <th>状态</th>
+                <th>额度概览</th>
+                <th>RPM</th>
+                <th>模型/价格</th>
+              </tr>
+            </thead>
+            <tbody id="keys-body">
+              <tr><td colspan="5" class="empty">加载中...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <aside class="panel detail-panel" id="detail-panel">
+        <div class="panel-head">
+          <div>
+            <h2>策略详情</h2>
+            <p id="detail-subtitle">选择左侧 Key 后编辑。</p>
+          </div>
+        </div>
+        <div id="detail-body" class="panel-body detail-body">
+          <div class="empty">尚未选择 Key。</div>
+        </div>
+      </aside>
+    </section>
+  </div>
+
+  <div id="editor-modal" class="modal-backdrop" aria-hidden="true">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="editor-title">
+      <div class="modal-head">
+        <div>
+          <h2 id="editor-title">编辑模型/价格</h2>
+          <p class="subtitle">价格单位固定为美元 / 100 万 token；未知模型会保留，除非你主动移除。</p>
+        </div>
+        <button class="btn mini" data-close="editor-modal" type="button">关闭</button>
+      </div>
+      <div class="modal-body">
+        <div class="toolbar">
+          <input id="edit-model-search" placeholder="搜索模型">
+          <input id="edit-add-model" placeholder="手动添加模型名">
+          <button id="edit-add-model-btn" class="btn mini" type="button">添加</button>
+          <button id="edit-select-visible" class="btn mini" type="button">全选当前结果</button>
+          <button id="edit-clear-models" class="btn mini" type="button">清空</button>
+        </div>
+        <div id="edit-selected" class="selected-chips"></div>
+        <div id="unknown-notice" class="notice hidden"></div>
+        <div class="selector-layout">
+          <div class="model-list">
+            <div class="model-list-head">
+              <h3>模型列表</h3>
+              <span id="model-source-hint" class="muted"></span>
+            </div>
+            <div id="edit-model-list" class="model-items"></div>
+          </div>
+          <div class="price-list">
+            <div class="price-list-head">
+              <h3>价格</h3>
+              <small>输入 / 输出 / 缓存读 / 缓存写</small>
+            </div>
+            <div class="table-wrap">
+              <table class="price-table">
+                <thead>
+                  <tr>
+                    <th>模型</th>
+                    <th>输入</th>
+                    <th>输出</th>
+                    <th>缓存读</th>
+                    <th>缓存写</th>
+                  </tr>
+                </thead>
+                <tbody id="price-body"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="modal-foot">
+        <button class="btn" data-close="editor-modal" type="button">取消</button>
+        <button id="editor-apply" class="btn primary" type="button">应用到当前 Key</button>
+      </div>
+    </div>
+  </div>
+
+<script>
+const API = String(window.CPA_KEY_POLICY_PLUS_API_BASE || "/key-policy-plus/api").replace(/\/$/, "");
+const state = {
+  keys: [],
+  modelOptions: [],
+  modelWarnings: [],
+  selectedId: "",
+  dirty: false,
+  editor: null
+};
+const windows = [
+  ["5h", "5H", "five_hour_usd"],
+  ["24h", "24H", "daily_usd"],
+  ["7d", "7D", "weekly_usd"],
+  ["month", "月", "monthly_usd"]
+];
+const $ = id => document.getElementById(id);
+
+function escapeHTML(s){
+  return String(s ?? "").replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+function num(v){ const n = Number(v ?? 0); return Number.isFinite(n) ? n : 0; }
+function money(v, digits=3){
+  if (v === null || v === undefined || v === "") return "未设";
+  const n = Number(v);
+  return Number.isFinite(n) ? "$" + n.toFixed(digits) : "未设";
+}
+function inputMoney(v){
+  if (v === null || v === undefined || v === "") return "";
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0 ? n.toFixed(3) : "";
+}
+function priceNumber(v){
+  if (v === null || v === undefined || v === "") return "";
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0 ? String(n) : "";
+}
+function pct(v){
+  const n = Number(v);
+  if (!Number.isFinite(n)) return "-";
+  return Math.round(Math.max(0, Math.min(n, 9.99)) * 100) + "%";
+}
+function setSync(text, cls="info"){
+  $("sync").className = "chip stream " + cls;
+  $("sync").innerHTML = `<span class="dot"></span>${escapeHTML(text)}`;
+}
+async function api(path, opts={}){
+  const r = await fetch(API + path, {cache:"no-store", credentials:"same-origin", ...opts});
+  let d = {};
+  try { d = await r.json(); } catch (_) {}
+  if (!r.ok || !d.ok) throw new Error(d.message || d.error || `HTTP ${r.status}`);
+  return d;
+}
+function clone(value){ return JSON.parse(JSON.stringify(value || {})); }
+function limitsOf(k){ return k.limits || {}; }
+function usageOf(k){ return k.usage || {}; }
+function selectedModels(k){ return Array.isArray(k.models) ? [...k.models] : []; }
+function pricesOf(k){ return clone(k.prices || (k.pricing && k.pricing.models) || {}); }
+function quotaOf(k, name){
+  const q = (k.quota || {})[name] || {};
+  const limits = limitsOf(k);
+  const used = Number(q.used_usd ?? usageOf(k)[name] ?? 0);
+  const limit = q.limit_usd ?? (
+    name === "5h" ? limits.five_hour_usd :
+    name === "24h" ? limits.daily_usd :
+    name === "7d" ? limits.weekly_usd :
+    limits.monthly_usd
+  );
+  let remaining = q.remaining_usd;
+  let percent = q.percent;
+  if (remaining == null && limit != null) remaining = Math.max(Number(limit) - used, 0);
+  if (percent == null && limit != null && Number(limit) > 0) percent = used / Number(limit);
+  return {used, limit, remaining, percent};
+}
+function hasAnyLimit(k){
+  const limits = limitsOf(k);
+  return ["five_hour_usd","daily_usd","weekly_usd","monthly_usd"].some(f => limits[f] !== null && limits[f] !== undefined && limits[f] !== "");
+}
+function policyWarnings(k){
+  const warnings = [];
+  if (Number(k.rpm || 0) <= 0) warnings.push("未配置 RPM");
+  if (!hasAnyLimit(k)) warnings.push("未配置费用限额");
+  return warnings;
+}
+function limitHint(k){
+  const warnings = policyWarnings(k);
+  return warnings.length ? warnings.join(" · ") : "限额已配置";
+}
+function hasPrice(p){
+  if (!p) return false;
+  return ["input_per_million","output_per_million","cache_read_per_million","cache_creation_per_million"].some(f => Number(p[f] || 0) > 0);
+}
+function priceCoverage(k){
+  const models = selectedModels(k);
+  const prices = pricesOf(k);
+  const selected = models.length ? models : Object.keys(prices);
+  if (!selected.length) return "无价格";
+  const priced = selected.filter(m => hasPrice(prices[m])).length;
+  return `${priced}/${selected.length} 已计价`;
+}
+function modelCountText(k){
+  const models = selectedModels(k);
+  return models.length ? `${models.length} 个模型` : "允许全部模型";
+}
+function modelPreview(k){
+  const models = selectedModels(k);
+  if (!models.length) return "空列表：允许全部模型";
+  const shown = models.slice(0, 3).join(", ");
+  return models.length > 3 ? `${shown} +${models.length - 3}` : shown;
+}
+function displayPreview(v){ return String(v || "").replace(/\.\.\./g, "…"); }
+function statusTags(k){
+  const tags = [];
+  if (k.source_present === false) tags.push(`<span class="tag bad">官方已移除</span>`);
+  else tags.push(`<span class="tag ok">CPA 原生</span>`);
+  if (k.enabled) tags.push(`<span class="tag ok">启用</span>`);
+  else tags.push(`<span class="tag bad">禁用</span>`);
+  const warnings = policyWarnings(k);
+  if (warnings.length) tags.push(`<span class="tag warn">未配置限额</span>`);
+  if (k.inherited_from) tags.push(`<span class="tag warn">已继承</span>`);
+  if (k.inherit_conflict) tags.push(`<span class="tag warn">需选模板</span>`);
+  return tags.join("");
+}
+function visibleKeys(){
+  return state.keys.filter(k => !k.hidden && k.source_present !== false);
+}
+function findKey(id){ return state.keys.find(k => k.id === id); }
+function ensureSelection(){
+  const list = visibleKeys();
+  if (state.selectedId && list.some(k => k.id === state.selectedId)) return;
+  state.selectedId = list[0]?.id || "";
+}
+function markDirty(){
+  state.dirty = true;
+  setSync("有未保存策略", "warn");
+}
+function limitValue(k, field){ return limitsOf(k)[field]; }
+function setLimitValue(k, field, value){
+  k.limits = k.limits || {};
+  k.limits[field] = nullableNumber(value);
+}
+function nullableNumber(raw){
+  raw = String(raw ?? "").trim();
+  if (raw === "") return null;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0) throw new Error("数字字段不能为负或非法");
+  return n;
+}
+function cleanStrings(items){
+  const seen = new Set();
+  const out = [];
+  for (const item of items || []) {
+    const text = String(item || "").trim();
+    const key = text.toLowerCase();
+    if (!text || seen.has(key)) continue;
+    seen.add(key);
+    out.push(text);
+  }
+  return out;
+}
+function cleanPrices(prices){
+  const out = {};
+  for (const [name, raw] of Object.entries(prices || {})) {
+    const model = String(raw.model || name || "").trim();
+    if (!model) continue;
+    out[model] = {
+      model,
+      input_per_million: Number(raw.input_per_million || 0),
+      output_per_million: Number(raw.output_per_million || 0),
+      cache_read_per_million: Number(raw.cache_read_per_million || 0),
+      cache_creation_per_million: Number(raw.cache_creation_per_million || 0)
+    };
+  }
+  return out;
+}
+function keyPayload(k){
+  const limits = limitsOf(k);
+  return {
+    id: k.id,
+    enabled: !!k.enabled,
+    rpm: nullableNumber(k.rpm) || 0,
+    concurrency: 0,
+    max_active_sessions: 0,
+    models: cleanStrings(k.models || []),
+    prices: cleanPrices(pricesOf(k)),
+    five_hour_usd: nullableNumber(limits.five_hour_usd),
+    daily_usd: nullableNumber(limits.daily_usd),
+    weekly_usd: nullableNumber(limits.weekly_usd),
+    monthly_usd: nullableNumber(limits.monthly_usd)
+  };
+}
+
+function renderMetrics(){
+  const total = state.keys.length;
+  const enabled = state.keys.filter(k => k.enabled && k.source_present !== false).length;
+  const unlimited = state.keys.filter(k => policyWarnings(k).length).length;
+  const cost = state.keys.reduce((s,k) => s + Number(usageOf(k)["24h"] || 0), 0);
+  $("metrics").innerHTML = `
+    <article class="metric"><div class="label">当前官方 Key</div><div class="value">${total}</div><div class="hint">跟随 CPA/CPAMP 当前配置</div></article>
+    <article class="metric"><div class="label">启用策略</div><div class="value">${enabled}</div><div class="hint">新原生 Key 默认启用</div></article>
+    <article class="metric"><div class="label">24H 费用</div><div class="value">$${cost.toFixed(3)}</div><div class="hint">按 Plus 价格估算</div></article>
+    <article class="metric"><div class="label">未配置限额</div><div class="value">${unlimited}</div><div class="hint">${unlimited ? "请补 RPM 或费用窗口" : "全部已配置"}</div></article>`;
+}
+function renderQuotaMini(k, name, label){
+  const q = quotaOf(k, name);
+  const cls = Number(q.percent || 0) >= 1 ? "bad" : Number(q.percent || 0) >= .8 ? "warn" : "";
+  return `<div class="quota-mini">
+    <div class="quota-top"><span>${escapeHTML(label)}</span><span>${pct(q.percent)}</span></div>
+    <div class="quota-value">${money(q.used)} / ${money(q.limit)}</div>
+    <small>剩余 ${money(q.remaining)}</small>
+    <div class="bar ${cls}"><span style="width:${Math.min(Number(q.percent || 0) * 100, 100)}%"></span></div>
+  </div>`;
+}
+function renderKeyList(){
+  const body = $("keys-body");
+  const list = visibleKeys();
+  if (!list.length) {
+    body.innerHTML = `<tr><td colspan="5" class="empty">暂无可显示策略。请先在 CPA/CPAMP 添加原生 Key，然后刷新同步。</td></tr>`;
+    return;
+  }
+  body.innerHTML = list.map(k => `
+    <tr class="key-row ${k.id === state.selectedId ? "selected" : ""}" data-select="${escapeHTML(k.id)}">
+      <td><div class="key-title"><strong>${escapeHTML(k.name || k.alias || "-")}</strong><small class="mono">${escapeHTML(displayPreview(k.preview || k.id || ""))}</small></div></td>
+      <td><div class="tag-row">${statusTags(k)}</div></td>
+      <td><div class="mini-grid">${renderQuotaMini(k,"5h","5H")}${renderQuotaMini(k,"24h","24H")}${renderQuotaMini(k,"7d","7D")}${renderQuotaMini(k,"month","月")}</div></td>
+      <td><div class="stack"><span>RPM ${Number(k.rpm || 0)}</span><small>${escapeHTML(limitHint(k))}</small></div></td>
+      <td><div class="stack"><div class="tag-row"><span class="tag ${selectedModels(k).length ? "" : "warn"}">${escapeHTML(modelCountText(k))}</span><span class="tag ${priceCoverage(k).startsWith("0/") || priceCoverage(k) === "无价格" ? "warn" : "ok"}">${escapeHTML(priceCoverage(k))}</span></div><small>${escapeHTML(modelPreview(k))}</small></div></td>
+    </tr>`).join("");
+  body.querySelectorAll("[data-select]").forEach(row => row.onclick = () => {
+    state.selectedId = row.getAttribute("data-select");
+    render();
+  });
+}
+function renderDetail(){
+  const key = findKey(state.selectedId);
+  const body = $("detail-body");
+  if (!key) {
+    $("detail-subtitle").textContent = "选择左侧 Key 后编辑。";
+    body.innerHTML = `<div class="empty">尚未选择 Key。</div>`;
+    return;
+  }
+  $("detail-subtitle").textContent = `${key.name || key.alias || "-"} · ${displayPreview(key.preview || key.id)}`;
+  const disabled = key.source_present === false ? "disabled" : "";
+  body.innerHTML = `
+    <div class="tag-row">${statusTags(key)}<span class="tag">RPM ${Number(key.rpm || 0)}</span><span class="tag">${escapeHTML(modelCountText(key))}</span></div>
+    <div class="notice">别名只读，来自 CPAMP；如需改名请在 CPA/CPAMP 原生 Key 管理里修改。${policyWarnings(key).length ? " 当前 Key 未配置 RPM 或费用限额，新增即启用时可能无限额使用。" : ""}</div>
+    <div class="section-title"><h3>基础策略</h3></div>
+    <div class="field-grid">
+      <label class="span-2">Key 别名<input value="${escapeHTML(key.name || key.alias || "")}" disabled></label>
+      <label>启用状态<select data-detail="enabled" ${disabled}><option value="true" ${key.enabled ? "selected" : ""}>启用</option><option value="false" ${!key.enabled ? "selected" : ""}>禁用</option></select></label>
+      <label>RPM<input data-detail="rpm" type="number" min="0" value="${Number(key.rpm || 0)}" ${disabled}></label>
+    </div>
+    <div class="section-title"><h3>额度窗口</h3><small>已用 / 限额 / 剩余</small></div>
+    <div class="quota-editor">${windows.map(([name,label,field]) => {
+      const q = quotaOf(key, name);
+      return `<div class="quota-card">
+        <strong>${label}</strong>
+        <div>
+          <div>${money(q.used)} / ${money(q.limit)} / ${money(q.remaining)}</div>
+          <small>进度 ${pct(q.percent)}</small>
+          <div class="bar ${Number(q.percent || 0) >= 1 ? "bad" : Number(q.percent || 0) >= .8 ? "warn" : ""}"><span style="width:${Math.min(Number(q.percent || 0) * 100, 100)}%"></span></div>
+        </div>
+        <input data-limit="${field}" type="number" min="0" step="0.001" value="${inputMoney(limitValue(key, field))}" placeholder="不限" ${disabled}>
+      </div>`;
+    }).join("")}</div>
+    <div class="section-title"><h3>模型与价格</h3><button class="btn mini" id="edit-models" type="button" ${disabled}>编辑模型/价格</button></div>
+    <div class="notice">当前：${escapeHTML(modelPreview(key))}；${escapeHTML(priceCoverage(key))}。价格单位为美元 / 100 万 token。</div>
+    <div class="section-title"><h3>Soft Reset</h3></div>
+    <div class="actions">
+      <button class="btn mini" data-reset="5h" type="button">清5H</button>
+      <button class="btn mini" data-reset="24h" type="button">清24H</button>
+      <button class="btn mini" data-reset="7d" type="button">清7D</button>
+      <button class="btn mini" data-reset="month" type="button">清月</button>
+      <button class="btn mini" data-reset="all" type="button">清全部</button>
+    </div>`;
+  body.querySelectorAll("[data-detail]").forEach(input => input.oninput = () => updateDetail(input));
+  body.querySelectorAll("[data-detail]").forEach(input => input.onchange = () => updateDetail(input));
+  body.querySelectorAll("[data-limit]").forEach(input => input.oninput = () => {
+    setLimitValue(key, input.dataset.limit, input.value);
+    markDirty();
+    renderKeyList();
+  });
+  body.querySelectorAll("[data-reset]").forEach(btn => btn.onclick = () => resetSelected(btn.dataset.reset));
+  const edit = $("edit-models");
+  if (edit) edit.onclick = () => openEditor(key.id);
+}
+function updateDetail(input){
+  const key = findKey(state.selectedId);
+  if (!key || key.source_present === false) return;
+  const field = input.dataset.detail;
+  if (field === "enabled") key.enabled = input.value === "true";
+  else if (field === "rpm") key[field] = Number(input.value || 0);
+  markDirty();
+  renderKeyList();
+}
+function render(){
+  ensureSelection();
+  renderMetrics();
+  renderKeyList();
+  renderDetail();
+}
+
+async function load(){
+  try {
+    setSync("同步中", "info");
+    const [keys, models] = await Promise.all([api("/keys"), api("/models").catch(e => ({ok:false, models:[], warnings:[e.message]}))]);
+    state.keys = keys.keys || [];
+    state.modelOptions = models.models || [];
+    state.modelWarnings = models.warnings || [];
+    state.dirty = false;
+    setSync("已同步", "ok");
+    render();
+  } catch(e) {
+    setSync("同步失败：" + e.message, "bad");
+  }
+}
+async function saveAll(){
+  try {
+    setSync("保存中", "info");
+    const editable = state.keys.filter(k => k.source_present !== false);
+    const resp = await api("/keys/save", {
+      method:"PUT",
+      headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({keys: editable.map(keyPayload)})
+    });
+    state.keys = resp.keys || state.keys;
+    state.dirty = false;
+    setSync("已保存", "ok");
+    render();
+  } catch(e) {
+    setSync("保存失败：" + e.message, "bad");
+  }
+}
+async function resetSelected(windowName){
+  const key = findKey(state.selectedId);
+  if (!key) return;
+  if (!confirm(`确认清零 ${key.name || key.id} 的 ${windowName} 用量统计？这只写入 soft reset，不删除历史明细。`)) return;
+  try {
+    await api("/keys/reset", {
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({id:key.id, window:windowName})
+    });
+    setSync("已清零", "ok");
+    await load();
+  } catch(e) {
+    setSync("清零失败：" + e.message, "bad");
+  }
+}
+
+function allModelOptions(extra=[]){
+  const byID = new Map();
+  for (const opt of state.modelOptions || []) {
+    if (!opt || !opt.id) continue;
+    byID.set(String(opt.id).toLowerCase(), opt);
+  }
+  for (const id of extra || []) {
+    const key = String(id).toLowerCase();
+    if (!byID.has(key)) byID.set(key, {id, display_name:id, source:"plus_configured", known:false});
+  }
+  return [...byID.values()].sort((a,b) => String(a.id).localeCompare(String(b.id)));
+}
+function optionMatches(opt, search){
+  search = String(search || "").trim().toLowerCase();
+  if (!search) return true;
+  return String(opt.id || "").toLowerCase().includes(search) || String(opt.display_name || "").toLowerCase().includes(search);
+}
+function selectedChips(set){
+  const items = [...set].sort();
+  if (!items.length) return `<span class="muted">未选择模型：允许全部模型</span>`;
+  return items.map(m => `<span class="tag">${escapeHTML(m)} <button class="chip-button" data-remove-model="${escapeHTML(m)}" type="button">×</button></span>`).join("");
+}
+function renderModelOptions(container, selectedSet, search, options){
+  const filtered = options.filter(o => optionMatches(o, search));
+  if (!filtered.length) {
+    container.innerHTML = `<div class="empty">没有匹配模型。</div>`;
+    return;
+  }
+  container.innerHTML = filtered.map(o => `
+    <label class="model-option">
+      <input type="checkbox" data-model-option="${escapeHTML(o.id)}" ${selectedSet.has(o.id) ? "checked" : ""}>
+      <span><strong>${escapeHTML(o.display_name || o.id)}</strong><small>${escapeHTML(o.id)} · ${escapeHTML(o.source || "")}</small></span>
+    </label>`).join("");
+  container.querySelectorAll("[data-model-option]").forEach(input => input.onchange = () => {
+    if (input.checked) selectedSet.add(input.dataset.modelOption);
+    else selectedSet.delete(input.dataset.modelOption);
+    renderEditor();
+  });
+}
+function openEditor(id){
+  const key = findKey(id);
+  if (!key || key.source_present === false) return;
+  state.editor = {
+    keyId: id,
+    models: new Set(selectedModels(key)),
+    prices: pricesOf(key),
+    search: ""
+  };
+  $("edit-model-search").value = "";
+  $("edit-add-model").value = "";
+  renderEditor();
+  openModal("editor-modal");
+}
+function renderEditor(){
+  const editor = state.editor;
+  if (!editor) return;
+  const options = allModelOptions([...editor.models, ...Object.keys(editor.prices || {})]);
+  $("model-source-hint").textContent = state.modelWarnings.join(" ");
+  $("edit-selected").innerHTML = selectedChips(editor.models);
+  $("edit-selected").querySelectorAll("[data-remove-model]").forEach(btn => btn.onclick = () => {
+    editor.models.delete(btn.dataset.removeModel);
+    renderEditor();
+  });
+  renderModelOptions($("edit-model-list"), editor.models, $("edit-model-search").value || "", options);
+  const unknown = [...editor.models].filter(m => !options.some(o => o.id === m && o.known));
+  $("unknown-notice").classList.toggle("hidden", unknown.length === 0);
+  $("unknown-notice").textContent = unknown.length ? `以下模型来自现有策略或手动输入：${unknown.join(", ")}` : "";
+  const models = [...editor.models].sort();
+  $("price-body").innerHTML = models.map(model => {
+    const p = editor.prices[model] || {model};
+    return `<tr>
+      <td><strong>${escapeHTML(model)}</strong></td>
+      <td><input data-price="${escapeHTML(model)}" data-field="input_per_million" type="number" min="0" step="0.000001" value="${priceNumber(p.input_per_million)}"></td>
+      <td><input data-price="${escapeHTML(model)}" data-field="output_per_million" type="number" min="0" step="0.000001" value="${priceNumber(p.output_per_million)}"></td>
+      <td><input data-price="${escapeHTML(model)}" data-field="cache_read_per_million" type="number" min="0" step="0.000001" value="${priceNumber(p.cache_read_per_million)}"></td>
+      <td><input data-price="${escapeHTML(model)}" data-field="cache_creation_per_million" type="number" min="0" step="0.000001" value="${priceNumber(p.cache_creation_per_million)}"></td>
+    </tr>`;
+  }).join("") || `<tr><td colspan="5" class="empty">允许全部模型时不会逐项计价；如需计费，请选择具体模型并填写价格。</td></tr>`;
+  $("price-body").querySelectorAll("[data-price]").forEach(input => input.oninput = () => {
+    const model = input.dataset.price;
+    editor.prices[model] = editor.prices[model] || {model};
+    editor.prices[model][input.dataset.field] = Number(input.value || 0);
+  });
+}
+function addEditorModel(){
+  const id = $("edit-add-model").value.trim();
+  if (!id || !state.editor) return;
+  state.editor.models.add(id);
+  $("edit-add-model").value = "";
+  renderEditor();
+}
+function applyEditor(){
+  const editor = state.editor;
+  if (!editor) return;
+  const key = findKey(editor.keyId);
+  if (!key) return;
+  key.models = cleanStrings([...editor.models]);
+  key.prices = cleanPrices(editor.prices);
+  key.pricing = {models: key.prices};
+  markDirty();
+  closeModal("editor-modal");
+  render();
+}
+function openModal(id){
+  const el = $(id);
+  if (!el) return;
+  el.classList.add("open");
+  el.setAttribute("aria-hidden", "false");
+}
+function closeModal(id){
+  const el = $(id);
+  if (!el) return;
+  el.classList.remove("open");
+  el.setAttribute("aria-hidden", "true");
+}
+
+$("save").onclick = saveAll;
+$("refresh").onclick = load;
+$("reload-models").onclick = async () => { await load(); };
+$("edit-model-search").oninput = renderEditor;
+$("edit-add-model-btn").onclick = addEditorModel;
+$("edit-select-visible").onclick = () => {
+  if (!state.editor) return;
+  const search = $("edit-model-search").value || "";
+  allModelOptions([...state.editor.models]).filter(o => optionMatches(o, search)).forEach(o => state.editor.models.add(o.id));
+  renderEditor();
+};
+$("edit-clear-models").onclick = () => { if (state.editor) { state.editor.models.clear(); renderEditor(); } };
+$("editor-apply").onclick = applyEditor;
+document.querySelectorAll("[data-close]").forEach(btn => btn.onclick = () => closeModal(btn.dataset.close));
+window.addEventListener("beforeunload", e => {
+  if (!state.dirty) return;
+  e.preventDefault();
+  e.returnValue = "";
+});
+load();
+</script>
+</body>
+</html>

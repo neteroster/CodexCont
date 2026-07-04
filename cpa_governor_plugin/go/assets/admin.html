@@ -1,0 +1,355 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>CPA Governor</title>
+  <style>{{CSS}}</style>
+</head>
+<body>
+<main class="shell">
+  <header id="topbar" class="topbar">
+    <div class="brand">
+      <div class="mark">G</div>
+      <div>
+        <h1>CPA Governor</h1>
+        <p class="subtitle">CodexCont 实时保护状态</p>
+      </div>
+    </div>
+    <div class="toolbar">
+      <span id="stream-chip" class="chip stream warn"><span class="dot"></span><span>正在连接</span></span>
+      <span id="active-chip" class="chip info"><span class="dot"></span><span>活跃 0</span></span>
+      <button id="refresh-btn" class="ghost sync-button" type="button" aria-live="polite">
+        <span class="sync-light" aria-hidden="true"></span>
+        <span class="sync-label">刷新</span>
+      </button>
+    </div>
+  </header>
+
+  <section class="metrics" id="metrics"></section>
+
+  <section class="panel">
+    <div class="panel-head">
+      <h2>最近请求</h2>
+      <div class="filters">
+        <select id="protection-filter" aria-label="保护状态筛选">
+          <option value="">全部状态</option>
+          <option value="protected_clean">已保护</option>
+          <option value="auto_continued">已自动续写</option>
+          <option value="risk_uncontinued">疑似截断</option>
+          <option value="failed">失败</option>
+          <option value="passthrough">透传</option>
+        </select>
+      </div>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th style="width:150px">时间</th>
+            <th style="width:170px">用户/Key</th>
+            <th style="width:126px">结果</th>
+            <th style="width:130px">模型</th>
+            <th style="width:110px">耗时</th>
+            <th style="width:130px">命中轮</th>
+            <th style="width:130px">末轮 reasoning</th>
+            <th style="width:120px">续写</th>
+            <th style="width:90px">操作</th>
+          </tr>
+        </thead>
+        <tbody id="request-body"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="panel">
+    <details class="advanced">
+      <summary>高级日志</summary>
+      <div class="logs" id="logs"></div>
+    </details>
+  </section>
+</main>
+
+<script>
+const BASE = "/governor/codexcont/admin";
+const state = {
+  requests:new Map(), logs:[], status:null, expanded:new Set(), seq:0, source:null,
+  refreshing:false, controller:null, timeoutTimer:null, reconnectTimer:null, refreshTimer:null, followups:[]
+};
+const labels = {
+  protected_clean:["已保护","ok"],
+  auto_continued:["已自动续写","info"],
+  risk_uncontinued:["疑似截断","warn"],
+  passthrough:["透传","warn"],
+  failed:["失败","bad"],
+  incomplete:["未完整","warn"],
+  processing:["处理中","info"]
+};
+const logLabels = {
+  request_started:"请求开始",
+  fold_start:"进入保护链",
+  round_decision:"轮次判断",
+  continuation_opened:"自动续写",
+  request_finished:"请求完成",
+  request_failed:"请求失败",
+  passthrough:"透传"
+};
+const PROCESSING_STALE_MS = 10 * 60 * 1000;
+const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));
+const num = (v) => Number(v || 0).toLocaleString();
+const dt = (v) => v ? new Date(v).toLocaleString() : "-";
+function requestTimeMs(req, fields=["started_at", "updated_at", "ended_at"]){
+  for (const field of fields) {
+    const raw = req && req[field];
+    if (!raw) continue;
+    const ms = Date.parse(raw);
+    if (Number.isFinite(ms)) return ms;
+  }
+  return Number.NaN;
+}
+function activeTimeMs(req){
+  return requestTimeMs(req, ["updated_at", "started_at", "ended_at"]);
+}
+function isActiveProcessing(req, now=Date.now()){
+  if (!req || (req.status !== "processing" && req.protection !== "processing")) return false;
+  const ms = activeTimeMs(req);
+  return !Number.isFinite(ms) || (now - ms <= PROCESSING_STALE_MS);
+}
+function activeProcessingCount(items){
+  const now = Date.now();
+  return (items || []).filter(req => isActiveProcessing(req, now)).length;
+}
+function chip(value){
+  const item = labels[value] || [value || "未知",""];
+  return `<span class="chip ${item[1]}"><span class="dot"></span>${esc(item[0])}</span>`;
+}
+function setStream(kind, text){
+  const el = document.getElementById("stream-chip");
+  el.className = `chip stream ${kind}`;
+  el.querySelector("span:last-child").textContent = text;
+  document.getElementById("topbar").classList.toggle("live-active", ["ok", "info", "warn", "bad"].includes(kind));
+  applySyncLight(kind);
+}
+function applySyncLight(kind){
+  const btn = document.getElementById("refresh-btn");
+  btn.classList.remove("live-ok", "live-info", "live-warn", "live-bad");
+  if (["ok", "info", "warn", "bad"].includes(kind)) btn.classList.add(`live-${kind}`);
+}
+function setRefreshState(kind, text){
+  const btn = document.getElementById("refresh-btn");
+  btn.classList.remove("syncing", "just-updated", "sync-error");
+  btn.disabled = kind === "syncing";
+  btn.setAttribute("aria-busy", kind === "syncing" ? "true" : "false");
+  if (kind === "syncing") btn.classList.add("syncing");
+  if (kind === "updated") btn.classList.add("just-updated");
+  if (kind === "error") btn.classList.add("sync-error");
+  btn.querySelector(".sync-label").textContent = text || "刷新";
+  clearTimeout(state.refreshTimer);
+  if (kind === "updated" || kind === "error") {
+    state.refreshTimer = setTimeout(() => {
+      btn.classList.remove("just-updated", "sync-error");
+      btn.querySelector(".sync-label").textContent = "刷新";
+    }, 1300);
+  }
+}
+function clearSnapshotTimeout(){
+  if (state.timeoutTimer) clearTimeout(state.timeoutTimer);
+  state.timeoutTimer = null;
+}
+function clearReconnect(){
+  if (state.reconnectTimer) clearTimeout(state.reconnectTimer);
+  state.reconnectTimer = null;
+}
+function clearFollowups(){
+  state.followups.forEach(id => clearTimeout(id));
+  state.followups = [];
+}
+function cancelSnapshot(){
+  if (state.controller) state.controller.abort();
+  state.controller = null;
+  clearSnapshotTimeout();
+  clearTimeout(state.refreshTimer);
+  state.refreshTimer = null;
+  state.refreshing = false;
+  state.seq += 1;
+  const btn = document.getElementById("refresh-btn");
+  btn.classList.remove("syncing", "just-updated", "sync-error");
+  btn.disabled = false;
+  btn.setAttribute("aria-busy", "false");
+  btn.querySelector(".sync-label").textContent = "刷新";
+}
+function refreshMinimumDelay(force, startedAt){
+  if (!force) return Promise.resolve();
+  const waitMs = Math.max(0, 420 - (performance.now() - startedAt));
+  return new Promise(resolve => setTimeout(resolve, waitMs));
+}
+function keyLabel(req){
+  const k = req.key_identity || {};
+  if (k.known) return `${esc(k.name || "已识别 Key")}<small>${esc(k.preview || k.id || "")}</small>`;
+  return `${esc(k.name || "未识别 Key")}<small>${esc(k.preview || "")}</small>`;
+}
+function renderMetrics(){
+  const s = state.status || {};
+  const c = s.counters || {};
+  const reqs = [...state.requests.values()];
+  const active = activeProcessingCount(reqs);
+  const continued = reqs.filter(r => r.protection === "auto_continued").length;
+  const risky = reqs.filter(r => r.protection === "risk_uncontinued").length;
+  document.getElementById("active-chip").querySelector("span:last-child").textContent = `活跃 ${num(active)}`;
+  document.getElementById("metrics").innerHTML = `
+    <article class="metric"><div class="label">总请求</div><div class="value">${num(c.total_requests)}</div><div class="hint">CodexCont 捕获</div></article>
+    <article class="metric"><div class="label">自动续写</div><div class="value">${num(c.continuations || continued)}</div><div class="hint">隐藏续写轮</div></article>
+    <article class="metric"><div class="label">疑似截断</div><div class="value">${num(c.truncation_hits || risky)}</div><div class="hint">516 / 518n-2 指纹</div></article>
+    <article class="metric"><div class="label">失败</div><div class="value">${num(c.failures)}</div><div class="hint">最近错误 ${esc((s.last_error || {}).reason || "-")}</div></article>`;
+}
+function rowDetail(req){
+  const rounds = req.rounds || [];
+  const roundText = rounds.length ? rounds.map(r => `#${r.round} reasoning ${r.reasoning_tokens ?? "-"} / ${r.decision || "-"}`).join("<br>") : "无轮次摘要";
+  return `<tr class="detail-row"><td colspan="9"><div class="detail-grid">
+    <section class="detail-card"><h3>请求信息</h3><dl class="kv"><dt>请求 ID</dt><dd class="mono">${esc(req.request_id)}</dd><dt>路径</dt><dd>${esc(req.path)}</dd><dt>最终状态</dt><dd>${esc(req.final_status || req.status)}</dd><dt>停止原因</dt><dd>${esc(req.stopped_reason || "-")}</dd></dl></section>
+    <section class="detail-card"><h3>保护判断</h3><dl class="kv"><dt>保护结果</dt><dd>${chip(req.protection)}</dd><dt>命中轮</dt><dd>${esc(req.first_truncation_round ?? "-")}</dd><dt>命中 reasoning</dt><dd>${esc(req.first_truncation_reasoning_tokens ?? "-")}</dd><dt>续写次数</dt><dd>${num(req.continuation_count)}</dd></dl></section>
+    <section class="detail-card"><h3>轮次摘要</h3><p class="muted">${roundText}</p></section>
+    <section class="detail-card"><h3>失败 / 透传</h3><dl class="kv"><dt>失败原因</dt><dd>${esc(req.failure_reason || "-")}</dd><dt>失败详情</dt><dd>${esc(req.failure_detail || "-")}</dd><dt>透传原因</dt><dd>${esc(req.passthrough_reason || "-")}</dd></dl></section>
+  </div></td></tr>`;
+}
+function renderRequests(){
+  const filter = document.getElementById("protection-filter").value;
+  const body = document.getElementById("request-body");
+  let rows = [...state.requests.values()].sort((a,b) => {
+    const left = requestTimeMs(b, ["started_at", "updated_at", "ended_at"]);
+    const right = requestTimeMs(a, ["started_at", "updated_at", "ended_at"]);
+    if (Number.isFinite(left) && Number.isFinite(right)) return left - right;
+    if (Number.isFinite(left)) return -1;
+    if (Number.isFinite(right)) return 1;
+    return String(b.updated_at || b.started_at || "").localeCompare(String(a.updated_at || a.started_at || ""));
+  });
+  if (filter) rows = rows.filter(r => r.protection === filter);
+  if (!rows.length) {
+    body.innerHTML = `<tr><td colspan="9"><div class="empty">暂无请求</div></td></tr>`;
+    return;
+  }
+  body.innerHTML = rows.map(req => {
+    const open = state.expanded.has(req.request_id);
+    const main = `<tr>
+      <td>${dt(req.started_at)}<small class="mono">${esc(req.request_id || "")}</small></td>
+      <td>${keyLabel(req)}</td>
+      <td>${chip(req.protection)}</td>
+      <td>${esc(req.model || "-")}</td>
+      <td>${req.duration_ms == null ? "-" : num(req.duration_ms) + " ms"}</td>
+      <td>${req.first_truncation_round == null ? "-" : "#" + esc(req.first_truncation_round)}</td>
+      <td>${req.latest_reasoning_tokens == null ? "-" : num(req.latest_reasoning_tokens)}</td>
+      <td>${num(req.continuation_count)}</td>
+      <td><button class="ghost" data-toggle="${esc(req.request_id)}" type="button">${open ? "收起" : "展开"}</button></td>
+    </tr>`;
+    return main + (open ? rowDetail(req) : "");
+  }).join("");
+  body.querySelectorAll("[data-toggle]").forEach(btn => btn.onclick = () => {
+    const id = btn.getAttribute("data-toggle");
+    if (state.expanded.has(id)) state.expanded.delete(id); else state.expanded.add(id);
+    renderRequests();
+  });
+}
+function renderLogs(){
+  const box = document.getElementById("logs");
+  const rows = state.logs.slice(-160).reverse();
+  box.innerHTML = rows.map(item => `<div class="log-line"><span>${new Date(item.ts).toLocaleTimeString()}</span><span>${esc(item.level)}</span><span>${esc(logLabels[item.event] || item.event)}</span><span>${esc(item.message || JSON.stringify(item.fields || {}))}</span></div>`).join("") || `<div class="empty">暂无日志</div>`;
+}
+async function getJSON(path, signal){
+  const r = await fetch(BASE + path + (path.includes("?") ? "&" : "?") + "_=" + Date.now(), {cache:"no-store", signal});
+  if (!r.ok) throw new Error(`${r.status}`);
+  return r.json();
+}
+async function refreshSnapshots(force=false){
+  if (document.hidden && !force) return;
+  if (state.refreshing) {
+    if (!force) return;
+    cancelSnapshot();
+  }
+  state.refreshing = true;
+  const token = ++state.seq;
+  const controller = new AbortController();
+  state.controller = controller;
+  state.timeoutTimer = setTimeout(() => {
+    if (token === state.seq && state.refreshing) controller.abort();
+  }, 12000);
+  const startedAt = performance.now();
+  setRefreshState("syncing", "同步中");
+  setStream("info", "正在同步");
+  try {
+    const [status, requests] = await Promise.all([getJSON("/status", controller.signal), getJSON("/requests?limit=100", controller.signal)]);
+    await refreshMinimumDelay(force, startedAt);
+    if (token !== state.seq) return;
+    state.status = status;
+    state.requests = new Map((requests.requests || []).map(req => [req.request_id, req]));
+    renderMetrics();
+    renderRequests();
+    setRefreshState("updated", "刚刚更新");
+    if (state.source && state.source.readyState !== EventSource.CLOSED) setStream("ok", "实时已连接");
+    else setStream("warn", "等待重连");
+  } catch (err) {
+    await refreshMinimumDelay(force, startedAt);
+    if (token === state.seq) {
+      setRefreshState("error", "同步失败");
+      setStream("bad", "快照失败");
+    }
+  } finally {
+    if (token === state.seq) {
+      state.refreshing = false;
+      state.controller = null;
+      clearSnapshotTimeout();
+    }
+  }
+}
+function connectStream(){
+  clearReconnect();
+  if (state.source) state.source.close();
+  document.getElementById("topbar").classList.add("live-tick");
+  setTimeout(() => document.getElementById("topbar").classList.remove("live-tick"), 720);
+  setStream("warn", "正在连接");
+  const src = new EventSource(BASE + "/logs/stream");
+  state.source = src;
+  src.addEventListener("ready", () => setStream("ok", "实时已连接"));
+  src.addEventListener("request", ev => {
+    const req = JSON.parse(ev.data);
+    if (req.request_id) state.requests.set(req.request_id, req);
+    renderMetrics();
+    renderRequests();
+    if (req.status === "processing") state.followups.push(setTimeout(() => refreshSnapshots(false), 1200));
+  });
+  src.addEventListener("log", ev => {
+    state.logs.push(JSON.parse(ev.data));
+    if (state.logs.length > 500) state.logs.splice(0, state.logs.length - 500);
+    renderLogs();
+  });
+  src.onerror = () => {
+    setStream("bad", "实时重连中");
+    src.close();
+    if (!document.hidden) state.reconnectTimer = setTimeout(connectStream, 1600);
+  };
+}
+function reconnectAll(){
+  cancelSnapshot();
+  clearFollowups();
+  refreshSnapshots(true);
+  connectStream();
+}
+document.getElementById("refresh-btn").onclick = () => refreshSnapshots(true);
+document.getElementById("protection-filter").onchange = renderRequests;
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) {
+    cancelSnapshot();
+    clearFollowups();
+    clearReconnect();
+    if (state.source) state.source.close();
+    return;
+  }
+  reconnectAll();
+});
+window.addEventListener("pageshow", () => {
+  reconnectAll();
+});
+window.addEventListener("focus", reconnectAll);
+reconnectAll();
+</script>
+</body>
+</html>

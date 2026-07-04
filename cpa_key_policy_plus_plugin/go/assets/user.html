@@ -1,0 +1,670 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>CPA 用量自助页</title>
+  <style>{{CSS}}</style>
+</head>
+<body>
+<main class="shell">
+  <header id="topbar" class="topbar">
+    <div class="brand">
+      <div class="mark">U</div>
+      <div>
+        <h1>CPA 用量自助页</h1>
+        <p class="subtitle">单 Key 实时监控、额度明细和思维链保护状态</p>
+      </div>
+    </div>
+    <div class="toolbar">
+      <span id="live" class="chip stream warn"><span class="dot"></span><span>未登录</span></span>
+      <span id="active-chip" class="chip info hidden"><span class="dot"></span><span>活跃 0</span></span>
+      <button id="refresh" class="ghost sync-button hidden" type="button" aria-live="polite">
+        <span class="sync-light" aria-hidden="true"></span>
+        <span class="sync-label">刷新</span>
+      </button>
+      <button id="logout" class="ghost hidden" type="button">退出</button>
+    </div>
+  </header>
+
+  <section class="panel login" id="login">
+    <div class="panel-head"><h2>登录</h2></div>
+    <div class="panel-body">
+      <p class="muted">请使用 CPA/CPAMP 中管理的完整原生 sk- Key。</p>
+      <div class="login-row">
+        <input id="key" type="password" autocomplete="off" spellcheck="false" placeholder="粘贴完整 sk- 原生 Key">
+        <button id="loginBtn" class="primary" type="button">登录</button>
+      </div>
+      <p id="err"></p>
+    </div>
+  </section>
+
+  <section id="app" class="hidden">
+    <section class="metrics" id="cards"></section>
+    <section class="panel">
+      <div class="panel-body">
+        <div class="tabs">
+          <button data-tab="usage" class="active" type="button">额度与明细</button>
+          <button data-tab="codex" type="button">思维链保护</button>
+        </div>
+        <div id="content"></div>
+      </div>
+    </section>
+  </section>
+</main>
+
+<script>
+const USER_API = location.pathname.startsWith("/key-policy-plus-user") ? "/key-policy-plus-user/api" : "/v0/resource/plugins/cpa-key-policy-plus/user/api";
+const PRIMARY_RANGE = "24h";
+const $ = (id) => document.getElementById(id);
+const state = {
+  tab: "usage",
+  me: null,
+  usage: null,
+  events: [],
+  protection: [],
+  expandedEvents: new Set(),
+  expandedProtection: new Set(),
+  eventSigs: {},
+  protectionSigs: {},
+  freshEvents: new Set(),
+  freshProtection: new Set(),
+  cardSig: "",
+  usageRenderSig: "",
+  protectionRenderSig: "",
+  errors: {usage:"", protection:""},
+  timer: null,
+  refreshTimer: null,
+  timeoutTimer: null,
+  controller: null,
+  seq: 0,
+  refreshing: false
+};
+const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));
+const num = (v) => Number(v || 0).toLocaleString();
+const money = (v, digits=3) => v == null ? "未设" : "$" + Number(v || 0).toFixed(digits);
+const dt = (v) => v ? new Date(v).toLocaleString() : "-";
+const signature = (value) => JSON.stringify(value || {});
+const rangeLabel = (v) => ({ "5h":"5 小时", "24h":"24 小时", "7d":"7 天", "month":"本月" }[v] || v || "-");
+const duration = (v) => {
+  if (v == null || Number(v) <= 0) return "-";
+  const n = Number(v);
+  return n < 1000 ? `${Math.round(n)} ms` : `${(n / 1000).toFixed(2)} s`;
+};
+const pct = (v) => {
+  if (v == null || !Number.isFinite(Number(v))) return "-";
+  return `${(Number(v) * 100).toFixed(1)}%`;
+};
+const labels = {
+  success:["成功","ok"],
+  protected_clean:["已保护","ok"],
+  auto_continued:["已自动续写","info"],
+  risk_uncontinued:["疑似截断","warn"],
+  passthrough:["透传","warn"],
+  failed:["失败","bad"],
+  incomplete:["未完整","warn"],
+  processing:["处理中","info"]
+};
+const PROCESSING_STALE_MS = 10 * 60 * 1000;
+function chip(value, fallback){
+  const item = labels[value] || [fallback || value || "未知", ""];
+  return `<span class="chip ${item[1]}"><span class="dot"></span>${esc(item[0])}</span>`;
+}
+function setLive(kind, text){
+  const el = $("live");
+  el.className = `chip stream ${kind}`;
+  el.querySelector("span:last-child").textContent = text;
+  $("topbar").classList.toggle("live-active", ["ok", "info", "warn", "bad"].includes(kind));
+  applySyncLight(kind);
+}
+function applySyncLight(kind){
+  const refresh = $("refresh");
+  refresh.classList.remove("live-ok", "live-info", "live-warn", "live-bad");
+  if (["ok", "info", "warn", "bad"].includes(kind)) refresh.classList.add(`live-${kind}`);
+}
+function setRefreshState(kind, text){
+  const refresh = $("refresh");
+  refresh.classList.remove("syncing", "just-updated", "sync-error");
+  refresh.disabled = kind === "syncing";
+  refresh.setAttribute("aria-busy", kind === "syncing" ? "true" : "false");
+  if (kind === "syncing") refresh.classList.add("syncing");
+  if (kind === "updated") refresh.classList.add("just-updated");
+  if (kind === "error") refresh.classList.add("sync-error");
+  refresh.querySelector(".sync-label").textContent = text || "刷新";
+  clearTimeout(state.refreshTimer);
+  if (kind === "updated" || kind === "error") {
+    state.refreshTimer = setTimeout(() => {
+      refresh.classList.remove("just-updated", "sync-error");
+      refresh.querySelector(".sync-label").textContent = "刷新";
+    }, 1300);
+  }
+}
+function markRefreshStart(force){
+  $("topbar").classList.add("live-active");
+  if (force) {
+    $("app").classList.add("app-syncing");
+    setRefreshState("syncing", "同步中");
+    setLive("info", "正在同步");
+  } else {
+    $("topbar").classList.add("live-tick");
+    setTimeout(() => $("topbar").classList.remove("live-tick"), 720);
+  }
+}
+function refreshMinimumDelay(force, startedAt){
+  if (!force) return Promise.resolve();
+  const waitMs = Math.max(0, 420 - (performance.now() - startedAt));
+  return new Promise(resolve => setTimeout(resolve, waitMs));
+}
+function markRefreshDone(force){
+  $("app").classList.remove("app-syncing");
+  if (force) setRefreshState("updated", "刚刚更新");
+  setLive("ok", "实时已连接");
+}
+function markRefreshError(force){
+  $("app").classList.remove("app-syncing");
+  if (force) setRefreshState("error", "同步失败");
+  setLive("bad", "连接异常");
+}
+function changedIds(items, previous, idOf, sigOf){
+  const next = {};
+  const changed = new Set();
+  const hadPrevious = Object.keys(previous || {}).length > 0;
+  (items || []).forEach((item, index) => {
+    const id = idOf(item, index);
+    const sig = signature(sigOf(item));
+    next[id] = sig;
+    if (hadPrevious && previous[id] !== sig) changed.add(id);
+  });
+  return {next, changed};
+}
+function enteredKey(){
+  return $("key").value.trim().replace(/^authorization\s*:\s*/i,"").replace(/^(bearer\s+)+/i,"").trim();
+}
+function localKeyHint(v){
+  if (!v) return "请粘贴完整的 CPA 原生 sk- Key。";
+  if (/^cpa_/i.test(v)) return "旧的 cpa_ Key 已迁移下线。现在请使用 CPA/CPAMP 管理的原生 sk- Key。";
+  if (v.includes("...") || v.includes("…")) return "这是列表里的 Key 预览，不是完整 Key。请使用 CPAMP 里的完整 sk- Key。";
+  if (!/^sk[-_]/i.test(v)) return "用量自助页现在只接受 CPA 原生 sk- Key。";
+  return "";
+}
+async function api(path, opts={}){
+  const r = await fetch(USER_API + path, {cache:"no-store", credentials:"same-origin", ...opts});
+  let d = {};
+  try { d = await r.json(); } catch (_) {}
+  if (!d.ok) throw Object.assign(new Error(d.message || d.error || `HTTP ${r.status}`), {data:d, status:r.status});
+  return d;
+}
+function errorMessage(e, fallback){
+  const data = (e && e.data) || {};
+  return data.message || data.error || (e && e.message) || fallback || "同步失败";
+}
+function isAuthError(e){
+  const data = (e && e.data) || {};
+  return e && (e.status === 401 || e.status === 403 || data.category === "auth" || data.error === "not_authenticated");
+}
+function isRefreshCancel(signal){
+  return signal && signal.aborted && signal.reason === "refresh_cancelled";
+}
+function clearRefreshTimeout(){
+  if (state.timeoutTimer) clearTimeout(state.timeoutTimer);
+  state.timeoutTimer = null;
+}
+function cancelRefresh(){
+  if (state.controller) state.controller.abort("refresh_cancelled");
+  state.controller = null;
+  clearRefreshTimeout();
+  clearTimeout(state.refreshTimer);
+  state.refreshTimer = null;
+  state.refreshing = false;
+  state.seq += 1;
+  $("app").classList.remove("app-syncing");
+  $("refresh").classList.remove("syncing", "just-updated", "sync-error");
+  $("refresh").disabled = false;
+  $("refresh").setAttribute("aria-busy", "false");
+  $("refresh").querySelector(".sync-label").textContent = "刷新";
+}
+function eventID(e, index=0){
+  return e.request_id || `${e.requested_at || ""}-${e.model || ""}-${index}`;
+}
+function protectionID(e, index=0){
+  return e.request_id || `${e.started_at || e.updated_at || ""}-${e.model || ""}-${index}`;
+}
+function protectionTimeMs(req){
+  for (const field of ["started_at", "updated_at", "ended_at"]) {
+    const raw = req && req[field];
+    if (!raw) continue;
+    const ms = Date.parse(raw);
+    if (Number.isFinite(ms)) return ms;
+  }
+  return Number.NEGATIVE_INFINITY;
+}
+function activeTimeMs(req){
+  for (const field of ["updated_at", "started_at", "ended_at"]) {
+    const raw = req && req[field];
+    if (!raw) continue;
+    const ms = Date.parse(raw);
+    if (Number.isFinite(ms)) return ms;
+  }
+  return Number.NaN;
+}
+function isActiveProcessing(req, now=Date.now()){
+  if (!req || (req.status !== "processing" && req.protection !== "processing")) return false;
+  const ms = activeTimeMs(req);
+  return !Number.isFinite(ms) || (now - ms <= PROCESSING_STALE_MS);
+}
+function activeProcessingCount(items){
+  const now = Date.now();
+  return (items || []).filter(req => isActiveProcessing(req, now)).length;
+}
+function updateActiveChip(){
+  const el = $("active-chip");
+  if (!el) return;
+  el.querySelector("span:last-child").textContent = `活跃 ${num(activeProcessingCount(state.protection))}`;
+}
+function sortProtectionItems(items){
+  return [...(items || [])].sort((a, b) => protectionTimeMs(b) - protectionTimeMs(a));
+}
+function protectionMap(){
+  const out = {};
+  (state.protection || []).forEach((req, index) => {
+    out[protectionID(req, index)] = req;
+    if (req.request_id) out[req.request_id] = req;
+  });
+  return out;
+}
+function detailList(items){
+  return `<dl class="kv">${items.map(([k,v]) => `<dt>${esc(k)}</dt><dd>${esc(v == null || v === "" ? "-" : v)}</dd>`).join("")}</dl>`;
+}
+function statusChip(ev){
+  if (ev.failed) return chip("failed");
+  return chip("success");
+}
+function cacheSemanticsNote(tokens, usage){
+  const compat = Number(tokens.cached_input ?? usage.cached_tokens ?? 0);
+  const read = Number(tokens.cache_read ?? usage.cache_read_tokens ?? 0);
+  const write = Number(tokens.cache_creation ?? usage.cache_creation_tokens ?? 0);
+  if (compat > 0 && read === 0 && write === 0) {
+    return "CPA/CPAMP 的 cached_tokens 是兼容缓存命中桶；细粒度 Cache Read/Write 为 0 时仍可能代表真实缓存命中。";
+  }
+  return "缓存命中、细粒度读写和费用按 Key Policy+ 当前价格表估算。";
+}
+function limitForRange(limits, range){
+  if (!limits) return null;
+  if (range === "5h") return limits.five_hour_usd;
+  if (range === "24h") return limits.daily_usd;
+  if (range === "7d") return limits.weekly_usd;
+  if (range === "month") return limits.monthly_usd;
+  return null;
+}
+function renderCards(force=false){
+  if (!state.me) return;
+  const usageSummary = (state.usage || {}).summary || {};
+  const usage = usageSummary.usage || {};
+  const windows = state.me.usage || {};
+  const limits = state.me.limits || {};
+  const calls = Number(usageSummary.calls || 0);
+  const failed = Number(usageSummary.failed || 0);
+  const cacheTotal = Number(usage.cached_tokens || 0) + Number(usage.cache_read_tokens || 0) + Number(usage.cache_creation_tokens || 0);
+  const successRate = calls ? (calls - failed) / calls : null;
+  const nextSig = signature({me:state.me, usage:usageSummary, range:PRIMARY_RANGE});
+  if (!force && state.cardSig === nextSig) return;
+  state.cardSig = nextSig;
+  updateActiveChip();
+  $("cards").innerHTML = `
+    <article class="metric"><div class="label">当前 Key</div><div class="value">${esc(state.me.name || "-")}</div><div class="hint">${esc(state.me.preview || "")}</div></article>
+    <article class="metric"><div class="label">${rangeLabel(PRIMARY_RANGE)}费用</div><div class="value">${money(usageSummary.total_cost, 3)}</div><div class="hint">额度上限 ${money(limitForRange(limits, PRIMARY_RANGE), 3)}</div></article>
+    <article class="metric"><div class="label">调用统计</div><div class="value">${num(calls)} 次</div><div class="hint">成功率 ${pct(successRate)} · 失败 ${num(failed)}</div></article>
+    <article class="metric"><div class="label">Token</div><div class="value">${num(usage.total_tokens)}</div><div class="hint">I ${num(usage.input_tokens)} / O ${num(usage.output_tokens)}</div></article>
+    <article class="metric"><div class="label">思考量</div><div class="value">${num(usage.reasoning_tokens)}</div><div class="hint">Responses reasoning tokens</div></article>
+    <article class="metric"><div class="label">缓存活动</div><div class="value">${num(cacheTotal)}</div><div class="hint">兼容命中 ${num(usage.cached_tokens)} · R ${num(usage.cache_read_tokens)} / W ${num(usage.cache_creation_tokens)}</div></article>
+    <article class="metric"><div class="label">24H / 7D</div><div class="value">${money(windows["24h"], 3)}</div><div class="hint">7D ${money(windows["7d"], 3)} · 周限 ${money(limits.weekly_usd, 3)}</div></article>
+    <article class="metric"><div class="label">5H / 本月</div><div class="value">${money(windows["5h"], 3)}</div><div class="hint">本月 ${money(windows.month, 3)} · 月限 ${money(limits.monthly_usd, 3)}</div></article>`;
+}
+function eventDetail(ev){
+  const usage = ev.usage || {};
+  const breakdown = ev.cost_breakdown || {};
+  const tokens = breakdown.tokens || {};
+  const costs = breakdown.costs || {};
+  const prices = breakdown.prices || {};
+  const failure = ev.failure || "无失败详情";
+  const limits = (state.me || {}).limits || {};
+  return `<tr class="detail-row"><td colspan="9"><div class="detail-grid">
+    <section class="detail-card"><h3>请求信息</h3>${detailList([
+      ["请求 ID", ev.request_id || "-"],
+      ["接口", ev.endpoint || "-"],
+      ["Provider", ev.provider || "-"],
+      ["Executor", ev.executor_type || "-"],
+      ["状态码", ev.status_code || "-"],
+      ["请求模型", ev.requested_model || ev.model || "-"],
+      ["实际模型", ev.actual_model || ev.model || "-"],
+      ["Service Tier", ev.service_tier || "-"],
+      ["Reasoning Effort", ev.reasoning_effort || "-"],
+    ])}</section>
+    <section class="detail-card"><h3>Token 组成</h3>${detailList([
+      ["输入", num(tokens.input ?? usage.input_tokens)],
+      ["未缓存输入", num(tokens.billable_uncached_input ?? Math.max(Number(usage.input_tokens || 0) - Number(usage.cached_tokens || 0), 0))],
+      ["CPA 缓存命中", num(tokens.cached_input ?? usage.cached_tokens)],
+      ["Cache Read", num(tokens.cache_read ?? usage.cache_read_tokens)],
+      ["Cache Write", num(tokens.cache_creation ?? usage.cache_creation_tokens)],
+      ["缓存活动合计", num(Number(tokens.cached_input ?? usage.cached_tokens ?? 0) + Number(tokens.cache_read ?? usage.cache_read_tokens ?? 0) + Number(tokens.cache_creation ?? usage.cache_creation_tokens ?? 0))],
+      ["输出", num(tokens.output ?? usage.output_tokens)],
+      ["思考量", num(tokens.reasoning ?? usage.reasoning_tokens)],
+      ["可见输出估算", num(tokens.visible_output_estimate ?? Math.max(Number(usage.output_tokens || 0) - Number(usage.reasoning_tokens || 0), 0))],
+      ["总量", num(tokens.total ?? usage.total_tokens)],
+    ])}<p class="detail-note">${esc(cacheSemanticsNote(tokens, usage))}</p></section>
+    <section class="detail-card"><h3>费用组成</h3>${detailList([
+      ["价格模型", breakdown.model || ev.model || "-"],
+      ["来源", breakdown.source || "-"],
+      ["单位", "usd_per_1m_tokens"],
+      ["输入单价", prices.input_per_million == null ? "-" : `$${prices.input_per_million}/M`],
+      ["缓存读单价", prices.cache_read_per_million == null ? "-" : `$${prices.cache_read_per_million}/M`],
+      ["输出单价", prices.output_per_million == null ? "-" : `$${prices.output_per_million}/M`],
+      ["输入费用", money(costs.input, 4)],
+      ["缓存费用", money(Number(costs.cached_input || 0) + Number(costs.cache_read || 0) + Number(costs.cache_creation || 0), 4)],
+      ["输出费用", money(costs.output, 4)],
+      ["总费用", money(costs.total ?? ev.cost, 4)],
+    ])}</section>
+    <section class="detail-card"><h3>限额与失败</h3>${detailList([
+      ["当前范围", rangeLabel(PRIMARY_RANGE)],
+      ["额度上限", money(limitForRange(limits, PRIMARY_RANGE), 3)],
+      ["计入额度", "5 小时 / 24 小时 / 7 天 / 本月"],
+      ["TTFT", duration(ev.ttft_ms)],
+      ["总耗时", duration(ev.latency_ms)],
+    ])}<div class="failure-box mono">${esc(failure)}</div></section>
+  </div></td></tr>`;
+}
+function renderUsage(force=false){
+  if (state.tab !== "usage") return;
+  const protect = protectionMap();
+  const sig = signature({
+    range: PRIMARY_RANGE,
+    usage: state.usage,
+    events: state.events,
+    protection: state.protection.map((req) => ({
+      request_id:req.request_id, protection:req.protection, status:req.status,
+      latest_reasoning_tokens:req.latest_reasoning_tokens, continuation_count:req.continuation_count
+    })),
+    expanded: Array.from(state.expandedEvents),
+    fresh: Array.from(state.freshEvents)
+  });
+  if (!force && state.usageRenderSig === sig) return;
+  state.usageRenderSig = sig;
+  const events = state.events || [];
+  const rows = events.map((ev, index) => {
+    const id = eventID(ev, index);
+    const open = state.expandedEvents.has(id);
+    const usage = ev.usage || {};
+    const cacheTotal = Number(usage.cached_tokens || 0) + Number(usage.cache_read_tokens || 0) + Number(usage.cache_creation_tokens || 0);
+    const p = protect[ev.request_id || id];
+    const actual = ev.actual_model && ev.actual_model !== ev.model ? ev.actual_model : "";
+    const main = `<tr class="data-row">
+      <td><div>${dt(ev.requested_at)}</div><small class="mono">${esc(ev.request_id || "")}</small></td>
+      <td>${statusChip(ev)}${ev.failure ? `<div class="muted">${esc(ev.failure)}</div>` : ""}</td>
+      <td><div class="mono">${esc(ev.model || "-")}</div>${actual ? `<small class="mono">${esc(actual)}</small>` : ""}</td>
+      <td><span class="strong">${esc(ev.reasoning_effort || "-")}</span><div class="muted">Tier ${esc(ev.service_tier || "-")}</div></td>
+      <td><span class="strong">${duration(ev.latency_ms)}</span><div class="muted">TTFT ${duration(ev.ttft_ms)}</div></td>
+      <td><span class="strong">${num(usage.total_tokens)}</span><div class="muted">I ${num(usage.input_tokens)} / O ${num(usage.output_tokens)}</div></td>
+      <td><span class="strong">${num(cacheTotal)}</span><div class="muted">C ${num(usage.cached_tokens)} / R ${num(usage.cache_read_tokens)} / W ${num(usage.cache_creation_tokens)}</div></td>
+      <td>${p ? chip(p.protection) : `<span class="muted">-</span>`}</td>
+      <td><span class="strong">${money(ev.cost, 4)}</span><button class="ghost compact" data-event="${esc(id)}" type="button">${open ? "收起" : "展开"}</button></td>
+    </tr>`;
+    return main + (open ? eventDetail(ev) : "");
+  }).join("") || `<tr><td colspan="9"><div class="empty">暂无 ${rangeLabel(PRIMARY_RANGE)} 请求明细</div></td></tr>`;
+  const error = state.errors.usage ? `<div class="notice">${esc(state.errors.usage)}</div>` : "";
+  $("content").innerHTML = `<div class="panel embedded-panel">
+    <div class="panel-head"><h2>单 Key 实时监控</h2><span class="muted">${rangeLabel(PRIMARY_RANGE)} · 最近 ${num(events.length)} 条</span></div>
+    ${error}
+    <div class="table-wrap"><table class="realtime-table"><thead><tr>
+      <th style="width:170px">时间</th><th style="width:130px">状态</th><th style="width:170px">模型</th><th style="width:130px">思考/Tier</th>
+      <th style="width:120px">TTFT/耗时</th><th style="width:130px">Tokens</th><th style="width:150px">Cache</th><th style="width:140px">保护</th><th style="width:130px">费用</th>
+    </tr></thead><tbody>${rows}</tbody></table></div>
+  </div>`;
+  $("content").querySelectorAll("[data-event]").forEach(btn => btn.onclick = () => {
+    const id = btn.getAttribute("data-event");
+    if (state.expandedEvents.has(id)) state.expandedEvents.delete(id); else state.expandedEvents.add(id);
+    renderUsage(true);
+  });
+}
+function protectionDetail(req){
+  return `<tr class="detail-row"><td colspan="8"><div class="detail-grid">
+    <section class="detail-card"><h3>请求信息</h3>${detailList([
+      ["请求 ID", req.request_id || "-"],
+      ["模型", req.model || "-"],
+      ["路径", req.path || "-"],
+      ["状态", req.status || "-"],
+      ["最终状态", req.final_status || "-"],
+      ["耗时", duration(req.duration_ms)],
+    ])}</section>
+    <section class="detail-card"><h3>保护判断</h3><dl class="kv">
+      <dt>保护结果</dt><dd>${chip(req.protection)}</dd>
+      <dt>是否折叠</dt><dd>${req.folded == null ? "-" : (req.folded ? "是" : "否")}</dd>
+      <dt>是否透传</dt><dd>${req.passthrough == null ? "-" : (req.passthrough ? "是" : "否")}</dd>
+      <dt>透传原因</dt><dd>${esc(req.passthrough_reason || "-")}</dd>
+      <dt>停止原因</dt><dd>${esc(req.stopped_reason || "-")}</dd>
+    </dl></section>
+    <section class="detail-card"><h3>Reasoning 指标</h3>${detailList([
+      ["命中轮", req.first_truncation_round == null ? "-" : "#" + req.first_truncation_round],
+      ["命中 reasoning", req.first_truncation_reasoning_tokens == null ? "-" : num(req.first_truncation_reasoning_tokens)],
+      ["命中 n", req.first_truncation_n == null ? "-" : req.first_truncation_n],
+      ["末轮 reasoning", req.latest_reasoning_tokens == null ? "-" : num(req.latest_reasoning_tokens)],
+      ["自动续写", num(req.continuation_count)],
+    ])}</section>
+    <section class="detail-card"><h3>失败摘要</h3><div class="failure-box mono">${esc(req.failure_reason || req.failure_detail || "无失败详情")}</div></section>
+  </div></td></tr>`;
+}
+function renderProtection(force=false){
+  if (state.tab !== "codex") return;
+  const sig = signature({
+    items: state.protection,
+    expanded: Array.from(state.expandedProtection),
+    fresh: Array.from(state.freshProtection)
+  });
+  if (!force && state.protectionRenderSig === sig) return;
+  state.protectionRenderSig = sig;
+  const items = sortProtectionItems(state.protection || []);
+  updateActiveChip();
+  const rows = items.map((req, index) => {
+    const id = protectionID(req, index);
+    const open = state.expandedProtection.has(id);
+    const main = `<tr class="data-row">
+      <td><div>${dt(req.started_at || req.updated_at)}</div><small class="mono">${esc(req.request_id || "")}</small></td>
+      <td>${chip(req.protection)}</td>
+      <td><div class="mono">${esc(req.model || "-")}</div><div class="muted">${esc(req.status || "-")}</div></td>
+      <td><span class="strong">${req.first_truncation_round == null ? "-" : "#" + esc(req.first_truncation_round)}</span><div class="muted">${req.first_truncation_reasoning_tokens == null ? "" : num(req.first_truncation_reasoning_tokens)}</div></td>
+      <td><span class="strong">${req.latest_reasoning_tokens == null ? "-" : num(req.latest_reasoning_tokens)}</span><div class="muted">续写 ${num(req.continuation_count)}</div></td>
+      <td><span class="strong">${duration(req.duration_ms)}</span><div class="muted">${esc(req.stopped_reason || "-")}</div></td>
+      <td>${esc(req.failure_reason || req.failure_detail || "-")}</td>
+      <td><button class="ghost compact" data-protection="${esc(id)}" type="button">${open ? "收起" : "展开"}</button></td>
+    </tr>`;
+    return main + (open ? protectionDetail(req) : "");
+  }).join("") || `<tr><td colspan="8"><div class="empty">暂无属于当前 Key 的保护记录</div></td></tr>`;
+  const continued = items.filter(x => x.protection === "auto_continued").length;
+  const risk = items.filter(x => x.protection === "risk_uncontinued").length;
+  const failed = items.filter(x => x.protection === "failed").length;
+  const error = state.errors.protection ? `<div class="notice">${esc(state.errors.protection)}</div>` : "";
+  $("content").innerHTML = `<div class="panel embedded-panel">
+    <div class="panel-head"><h2>思维链保护实时状态</h2><span class="muted">${num(items.length)} 条 · 自动续写 ${num(continued)} · 疑似截断 ${num(risk)} · 失败 ${num(failed)}</span></div>
+    ${error}
+    <div class="table-wrap"><table class="realtime-table"><thead><tr>
+      <th style="width:180px">时间</th><th style="width:140px">保护结果</th><th style="width:160px">模型</th><th style="width:130px">命中轮</th>
+      <th style="width:140px">末轮 reasoning</th><th style="width:140px">耗时/停止</th><th>失败摘要</th><th style="width:90px">操作</th>
+    </tr></thead><tbody>${rows}</tbody></table></div>
+  </div>`;
+  $("content").querySelectorAll("[data-protection]").forEach(btn => btn.onclick = () => {
+    const id = btn.getAttribute("data-protection");
+    if (state.expandedProtection.has(id)) state.expandedProtection.delete(id); else state.expandedProtection.add(id);
+    renderProtection(true);
+  });
+}
+function renderCurrent(force=false){
+  if (state.tab === "usage") renderUsage(force);
+  else renderProtection(force);
+}
+async function fetchMe(seq, signal){
+  const meResp = await api("/me", {signal});
+  if (seq !== state.seq) return;
+  state.me = meResp.me;
+  renderCards();
+}
+async function fetchUsage(seq, signal){
+  const [usageResp, eventResp] = await Promise.all([
+    api(`/usage?range=${encodeURIComponent(PRIMARY_RANGE)}`, {signal}),
+    api(`/events?range=${encodeURIComponent(PRIMARY_RANGE)}&limit=100`, {signal})
+  ]);
+  if (seq !== state.seq) return;
+  state.usage = usageResp;
+  state.errors.usage = "";
+  const events = eventResp.events || [];
+  const result = changedIds(events, state.eventSigs, eventID, e => ({
+    requested_at:e.requested_at, failed:e.failed, model:e.model, actual_model:e.actual_model,
+    latency_ms:e.latency_ms, ttft_ms:e.ttft_ms, cost:e.cost, usage:e.usage, failure:e.failure,
+    reasoning_effort:e.reasoning_effort, service_tier:e.service_tier, status_code:e.status_code
+  }));
+  state.events = events;
+  state.eventSigs = result.next;
+  state.freshEvents = result.changed;
+  renderCards();
+  renderUsage();
+}
+async function fetchProtection(seq, signal){
+  const cc = await api("/codexcont?limit=100", {signal});
+  if (seq !== state.seq) return;
+  const requests = sortProtectionItems(cc.requests || []);
+  state.errors.protection = "";
+  const result = changedIds(requests, state.protectionSigs, protectionID, r => ({
+    protection:r.protection, status:r.status, latest_reasoning_tokens:r.latest_reasoning_tokens,
+    continuation_count:r.continuation_count, stopped_reason:r.stopped_reason, failure_reason:r.failure_reason,
+    duration_ms:r.duration_ms, first_truncation_round:r.first_truncation_round
+  }));
+  state.protection = requests;
+  state.protectionSigs = result.next;
+  state.freshProtection = result.changed;
+  updateActiveChip();
+  renderUsage();
+  renderProtection();
+}
+async function refreshActive(force=false, includeInactive=false){
+  if ($("app").classList.contains("hidden")) {
+    setLive("warn", "未登录");
+    return;
+  }
+  if (!force && document.hidden) return;
+  if (state.refreshing) {
+    if (!force) return;
+    cancelRefresh();
+  }
+  state.refreshing = true;
+  const seq = ++state.seq;
+  const controller = new AbortController();
+  state.controller = controller;
+  state.timeoutTimer = setTimeout(() => {
+    if (seq === state.seq && state.refreshing) controller.abort("refresh_timeout");
+  }, 12000);
+  const startedAt = performance.now();
+  markRefreshStart(force);
+  try {
+    await fetchMe(seq, controller.signal);
+    let partial = false;
+    const jobs = [];
+    if (includeInactive || state.tab === "usage") {
+      jobs.push(fetchUsage(seq, controller.signal).catch(e => {
+        if (isRefreshCancel(controller.signal)) return;
+        if (isAuthError(e)) throw e;
+        partial = true;
+        state.errors.usage = "用量接口同步失败：" + errorMessage(e);
+        renderUsage(true);
+      }));
+    }
+    if (includeInactive || state.tab === "usage" || state.tab === "codex") {
+      jobs.push(fetchProtection(seq, controller.signal).catch(e => {
+        if (isRefreshCancel(controller.signal)) return;
+        if (isAuthError(e)) throw e;
+        partial = true;
+        state.errors.protection = "思维链保护同步失败：" + errorMessage(e);
+        renderUsage(true);
+        renderProtection(true);
+      }));
+    }
+    await Promise.all(jobs);
+    await refreshMinimumDelay(force, startedAt);
+    if (seq !== state.seq) return;
+    if (partial) {
+      if (force) setRefreshState("error", "部分失败");
+      setLive("warn", "部分数据同步失败");
+    } else {
+      markRefreshDone(force);
+    }
+  } catch(e) {
+    await refreshMinimumDelay(force, startedAt);
+    if (seq === state.seq) {
+      if (isAuthError(e)) {
+        setLive("bad", "会话已过期");
+        if (force) setRefreshState("error", "重新登录");
+        clearInterval(state.timer);
+        $("app").classList.add("hidden");
+        $("login").classList.remove("hidden");
+        $("refresh").classList.add("hidden");
+        $("active-chip").classList.add("hidden");
+        $("logout").classList.add("hidden");
+        $("err").textContent = errorMessage(e, "会话已过期，请重新登录。");
+      } else {
+        markRefreshError(force);
+      }
+    }
+  } finally {
+    if (seq === state.seq) {
+      state.refreshing = false;
+      state.controller = null;
+      clearRefreshTimeout();
+    }
+  }
+}
+async function loginNow(){
+  $("err").textContent = "";
+  const raw = enteredKey();
+  const hint = localKeyHint(raw);
+  if (hint) { $("err").textContent = "登录失败：" + hint; return; }
+  try {
+    await api("/session", {headers:{"X-CPA-Key-Policy-Plus-Key": raw}});
+    state.errors = {usage:"", protection:""};
+    $("login").classList.add("hidden");
+    $("app").classList.remove("hidden");
+    $("refresh").classList.remove("hidden");
+    $("active-chip").classList.remove("hidden");
+    $("logout").classList.remove("hidden");
+    $("topbar").classList.add("live-active");
+    setLive("ok", "实时已连接");
+    renderCurrent(true);
+    await refreshActive(true, true);
+    schedule();
+  } catch(e) {
+    $("err").textContent = "登录失败：" + ((e.data || {}).message || e.message);
+  }
+}
+function switchTab(tab){
+  if (state.tab === tab) return;
+  state.tab = tab;
+  document.querySelectorAll(".tabs button").forEach(b => b.classList.toggle("active", b.dataset.tab === tab));
+  renderCurrent(true);
+  refreshActive(false);
+}
+function schedule(){
+  clearInterval(state.timer);
+  state.timer = setInterval(() => refreshActive(false), 5000);
+}
+$("loginBtn").onclick = loginNow;
+$("refresh").onclick = () => refreshActive(true);
+$("logout").onclick = () => location.reload();
+document.querySelectorAll(".tabs button").forEach(btn => btn.onclick = () => switchTab(btn.dataset.tab));
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) {
+    if (state.refreshing) cancelRefresh();
+    return;
+  }
+  if (!$("app").classList.contains("hidden")) refreshActive(true);
+});
+window.addEventListener("pageshow", () => { if (!$("app").classList.contains("hidden")) refreshActive(true); });
+window.addEventListener("focus", () => { if (!$("app").classList.contains("hidden")) refreshActive(true); });
+</script>
+</body>
+</html>

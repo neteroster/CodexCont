@@ -1,0 +1,3 @@
+{"file": ".trellis/spec/backend/codex-continuation-contracts.md", "reason": "Dashboard, CPA usage portal, CPAMP, and admin/public route contracts"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Safe projections travel from CPAMP/diagnostics APIs into browser tables and detail rows"}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "Failure-summary projection should be centralized in the backend redaction layer"}

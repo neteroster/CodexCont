@@ -1,0 +1,617 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CPA 用量管理</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0b1220;
+      --shell: #111827;
+      --panel: #151d2c;
+      --panel-2: #1a2434;
+      --line: #283448;
+      --line-strong: #33445e;
+      --text: #e8edf5;
+      --muted: #9aa7b8;
+      --blue: #3b96ff;
+      --green: #61d34f;
+      --red: #ff646d;
+      --amber: #f0aa2b;
+      --teal: #15c7d4;
+      --mono: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+      --sans: Inter, "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+      font-family: var(--sans);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: linear-gradient(180deg, #101827 0%, var(--bg) 44%, #080e19 100%);
+      color: var(--text);
+      letter-spacing: 0;
+    }
+    button, input, select { font: inherit; }
+    button, select, input {
+      min-height: 36px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #111827;
+      color: var(--text);
+    }
+    button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      padding: 0 12px;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    button.primary { border-color: transparent; background: linear-gradient(180deg, #43a2ff, #2d86ef); font-weight: 760; }
+    button.secondary { background: var(--panel-2); }
+    button.danger { border-color: rgba(255, 100, 109, .45); background: rgba(255, 100, 109, .12); color: #ffb5ba; }
+    button.is-loading::before {
+      content: "";
+      width: 14px;
+      height: 14px;
+      border: 2px solid rgba(232, 237, 245, .28);
+      border-top-color: currentColor;
+      border-radius: 50%;
+      animation: spin .75s linear infinite;
+    }
+    input, select { padding: 0 10px; }
+    input { width: 92px; min-width: 0; background: #0e1524; }
+    h1, h2, p { margin: 0; }
+    h1 { font-size: 20px; line-height: 1.2; }
+    h2 { font-size: 15px; }
+    .shell { width: min(1560px, calc(100% - 32px)); margin: 0 auto; padding: 22px 0 34px; }
+    .topbar, .section {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: rgba(21, 29, 44, .96);
+      box-shadow: 0 14px 34px rgba(0, 0, 0, .18);
+    }
+    .topbar {
+      min-height: 58px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 0 16px;
+      margin-bottom: 16px;
+      background: rgba(17, 24, 39, .9);
+    }
+    .brand { display: flex; align-items: center; gap: 12px; min-width: 0; }
+    .brand > div { min-width: 0; }
+    .mark {
+      width: 34px; height: 34px; display: grid; place-items: center;
+      border-radius: 8px; background: linear-gradient(135deg, #2d86ef, #15c7d4); font-weight: 850;
+    }
+    .subtitle { margin-top: 2px; color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .toolbar { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
+    .chip {
+      display: inline-flex; align-items: center; gap: 7px; min-height: 28px; padding: 0 10px;
+      border-radius: 999px; border: 1px solid var(--line); background: var(--panel-2);
+      color: var(--muted); font-size: 12px; font-weight: 720; white-space: nowrap;
+    }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); position: relative; flex: 0 0 auto; }
+    .chip.stream .dot { animation: statusBlink 1.45s ease-in-out infinite; }
+    .chip.stream .dot::after {
+      content: ""; position: absolute; inset: -5px; border-radius: inherit;
+      border: 1px solid currentColor; opacity: .55; animation: statusPing 1.45s ease-out infinite;
+    }
+    .ok { color: #a8ef9c; }
+    .bad { color: #ffb5ba; }
+    .warn { color: #ffd083; }
+    .info { color: #acd4ff; }
+    .chip.ok { border-color: rgba(97, 211, 79, .28); background: rgba(97, 211, 79, .13); color: #a8ef9c; }
+    .chip.ok .dot { background: var(--green); }
+    .chip.warn { border-color: rgba(240, 170, 43, .34); background: rgba(240, 170, 43, .14); color: #ffd083; }
+    .chip.warn .dot { background: var(--amber); }
+    .chip.bad { border-color: rgba(255, 100, 109, .34); background: rgba(255, 100, 109, .13); color: #ffb5ba; }
+    .chip.bad .dot { background: var(--red); }
+    .metrics { display: grid; grid-template-columns: repeat(4, minmax(180px, 1fr)); gap: 12px; margin-bottom: 14px; }
+    .metric {
+      min-height: 112px; padding: 15px; border: 1px solid var(--line); border-radius: 8px;
+      background: linear-gradient(180deg, rgba(26, 36, 52, .96), rgba(21, 29, 44, .96));
+    }
+    .metric-label { color: var(--muted); font-size: 12px; font-weight: 760; }
+    .metric-value { margin-top: 18px; font-size: 28px; line-height: 1; font-weight: 800; overflow-wrap: anywhere; }
+    .metric-hint { margin-top: 9px; color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .section { margin-bottom: 14px; overflow: hidden; }
+    .section-head {
+      min-height: 60px; display: flex; align-items: center; justify-content: space-between; gap: 12px;
+      padding: 12px 16px; border-bottom: 1px solid var(--line); background: rgba(26, 36, 52, .8);
+    }
+    .muted { color: var(--muted); }
+    .table-wrap { overflow-x: auto; background: #121a29; }
+    table { width: 100%; min-width: 1120px; border-collapse: separate; border-spacing: 0 8px; table-layout: fixed; padding: 8px 10px 12px; }
+    th { padding: 0 10px 4px; color: var(--muted); text-align: left; font-size: 12px; font-weight: 760; white-space: nowrap; }
+    td {
+      padding: 13px 10px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line);
+      background: #161e2d; vertical-align: middle; overflow: hidden; text-overflow: ellipsis;
+    }
+    tbody tr.data-row td:first-child,
+    tbody tr.model-row td:first-child,
+    tbody tr:not(.detail-row) td:first-child { border-left: 1px solid var(--line); border-radius: 8px 0 0 8px; }
+    tbody tr.data-row td:last-child,
+    tbody tr.model-row td:last-child,
+    tbody tr:not(.detail-row) td:last-child { border-right: 1px solid var(--line); border-radius: 0 8px 8px 0; }
+    tbody tr.detail-row td {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #111827;
+      overflow: visible;
+      text-overflow: clip;
+    }
+    .mono { font-family: var(--mono); font-size: 12px; }
+    .cell-stack { display: grid; gap: 5px; min-width: 0; }
+    .quota { display: grid; gap: 4px; }
+    .bar { height: 6px; border-radius: 999px; overflow: hidden; background: #0d1422; border: 1px solid var(--line); }
+    .bar span { display: block; height: 100%; width: 0%; background: linear-gradient(90deg, var(--teal), var(--blue)); }
+    .bar.danger span { background: linear-gradient(90deg, var(--amber), var(--red)); }
+    .actions { display: flex; gap: 6px; flex-wrap: wrap; }
+    .detail-grid { display: grid; grid-template-columns: repeat(4, minmax(220px, 1fr)); gap: 12px; }
+    .detail-card { border: 1px solid var(--line); border-radius: 8px; background: #0d1422; padding: 12px; }
+    .detail-card h3 { margin: 0 0 10px; font-size: 13px; }
+    .detail-list { display: grid; grid-template-columns: 112px minmax(0, 1fr); gap: 7px 10px; line-height: 1.45; }
+    .detail-list span:nth-child(odd) { color: var(--muted); }
+    .detail-note { margin-top: 10px; color: var(--muted); font-size: 12px; line-height: 1.5; }
+    .failure-box { max-height: 160px; overflow: auto; white-space: pre-wrap; word-break: break-word; }
+    .dirty-row td { border-color: rgba(240, 170, 43, .48); }
+    .empty { padding: 28px; color: var(--muted); text-align: center; background: transparent !important; border: 0 !important; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    @keyframes statusBlink { 0%, 100% { transform: scale(1); opacity: .72; } 50% { transform: scale(1.35); opacity: 1; } }
+    @keyframes statusPing { 0% { transform: scale(.65); opacity: .58; } 100% { transform: scale(1.9); opacity: 0; } }
+    @media (max-width: 980px) { .metrics { grid-template-columns: repeat(2, minmax(160px, 1fr)); } }
+    @media (max-width: 720px) {
+      .shell { width: min(100% - 18px, 1560px); padding-top: 10px; }
+      .topbar, .section-head { align-items: flex-start; flex-direction: column; }
+      .brand { width: 100%; }
+      .toolbar { justify-content: flex-start; width: 100%; }
+      .metrics { grid-template-columns: 1fr; }
+      .detail-grid { grid-template-columns: 1fr; }
+      table { min-width: 1180px; }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <div class="brand">
+        <div class="mark">U</div>
+        <div>
+          <h1>CPA 用量管理</h1>
+          <div class="subtitle">自有门户的限额、估算用量与软清零；不修改 CPAMP 原始请求记录。</div>
+        </div>
+      </div>
+      <div class="toolbar">
+        <span id="statusChip" class="chip stream warn"><span class="dot"></span><span>等待刷新</span></span>
+        <select id="rangeSelect">
+          <option value="5h">5 小时</option>
+          <option value="24h">24 小时</option>
+          <option value="7d">7 天</option>
+          <option value="month">本月</option>
+        </select>
+        <button id="refreshBtn" class="secondary" type="button">刷新</button>
+      </div>
+    </header>
+
+    <section class="metrics">
+      <article class="metric">
+        <div class="metric-label">Key 数量</div>
+        <div id="keyCount" class="metric-value">0</div>
+        <div id="enabledCount" class="metric-hint">启用 0</div>
+      </article>
+      <article class="metric">
+        <div class="metric-label">所选窗口总费用</div>
+        <div id="windowCost" class="metric-value">$0.0000</div>
+        <div id="windowLabel" class="metric-hint">-</div>
+      </article>
+      <article class="metric">
+        <div class="metric-label">超限风险</div>
+        <div id="riskCount" class="metric-value warn">0</div>
+        <div class="metric-hint">按门户估算，不是官方账单</div>
+      </article>
+      <article class="metric">
+        <div class="metric-label">清零方式</div>
+        <div class="metric-value info">Soft</div>
+        <div class="metric-hint">只写 reset watermark</div>
+      </article>
+    </section>
+
+    <section class="section">
+      <div class="section-head">
+        <div>
+          <h2>Key 限额与窗口用量</h2>
+          <p class="muted">日限/周限来自 Key Policy；5H/月限和清零点保存在自有 SQLite。</p>
+        </div>
+        <div class="toolbar">
+          <span id="saveChip" class="chip info"><span class="dot"></span><span>无改动</span></span>
+          <button id="saveAllBtn" class="primary" type="button" disabled>保存全部</button>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th style="width:180px;">Key</th>
+              <th style="width:120px;">状态</th>
+              <th style="width:170px;">5H</th>
+              <th style="width:170px;">日</th>
+              <th style="width:170px;">周</th>
+              <th style="width:170px;">月</th>
+              <th style="width:220px;">本地限额</th>
+              <th style="width:180px;">操作</th>
+            </tr>
+          </thead>
+          <tbody id="keyRows"><tr><td colspan="8" class="empty">正在读取...</td></tr></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-head">
+        <div>
+          <h2>最近请求</h2>
+          <p id="eventsHint" class="muted">默认显示全部 Key，可按单个用户/Key 排障。</p>
+        </div>
+        <select id="keySelect"></select>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th style="width:170px;">时间</th>
+              <th style="width:170px;">用户/Key</th>
+              <th style="width:100px;">状态</th>
+              <th style="width:150px;">模型</th>
+              <th style="width:110px;">延迟</th>
+              <th style="width:130px;">Tokens</th>
+              <th style="width:110px;">Reasoning</th>
+              <th style="width:100px;">费用</th>
+              <th style="width:110px;">详情</th>
+            </tr>
+          </thead>
+          <tbody id="eventRows"><tr><td colspan="9" class="empty">暂无请求记录</td></tr></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const state = { keys: [], selectedKey: "all", savedLimits: new Map(), dirty: false, expanded: new Set() };
+    const labels = { "5h": "5 小时", "24h": "24 小时", "7d": "7 天", month: "本月" };
+    const API_BASE = location.pathname.startsWith("/usage-admin") ? "/usage-admin" : "/admin";
+
+    function escapeHtml(value) {
+      return String(value == null ? "" : value).replace(/[&<>"']/g, ch => ({
+        "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+      }[ch]));
+    }
+    function num(value) { return Number(value || 0).toLocaleString("zh-CN"); }
+    function money(value) { return "$" + Number(value || 0).toFixed(4); }
+    function pct(value) {
+      if (value === null || value === undefined || value === "") return "-";
+      return (Number(value || 0) * 100).toFixed(1) + "%";
+    }
+    function limitText(value) {
+      if (value === null || value === undefined || value === "") return "未设置";
+      const n = Number(value);
+      if (!Number.isFinite(n)) return "未设置";
+      if (n === 0) return "不限";
+      return money(n);
+    }
+    function normalizeLimit(value) {
+      if (value === null || value === undefined || value === "") return "";
+      const text = String(value).trim();
+      if (!text) return "";
+      const n = Number(value);
+      return Number.isFinite(n) ? String(n) : text;
+    }
+    function limitPayload(value) {
+      const text = String(value ?? "").trim();
+      return text === "" ? null : text;
+    }
+    function time(ms) {
+      if (!ms) return "-";
+      return new Date(Number(ms)).toLocaleString("zh-CN", { hour12: false });
+    }
+    function duration(ms) {
+      if (ms === null || ms === undefined || ms === "") return "-";
+      const n = Number(ms);
+      if (n < 1000) return `${Math.round(n)} ms`;
+      return `${(n / 1000).toFixed(2)} s`;
+    }
+    function setStatus(kind, text) {
+      $("statusChip").className = `chip stream ${kind}`;
+      $("statusChip").innerHTML = `<span class="dot"></span><span>${escapeHtml(text)}</span>`;
+    }
+    function setSaveState(kind, text, dirty = state.dirty) {
+      $("saveChip").className = `chip ${kind}`;
+      $("saveChip").innerHTML = `<span class="dot"></span><span>${escapeHtml(text)}</span>`;
+      $("saveAllBtn").disabled = !dirty || kind === "warn" && text === "保存中";
+    }
+    async function api(path, options = {}) {
+      const method = String(options.method || "GET").toUpperCase();
+      const joiner = path.includes("?") ? "&" : "?";
+      const target = method === "GET" ? `${path}${joiner}_=${Date.now()}` : path;
+      const resp = await fetch(target, {
+        credentials: "same-origin",
+        cache: "no-store",
+        headers: { "Content-Type": "application/json" },
+        ...options,
+      });
+      if (!resp.ok) {
+        const body = await resp.json().catch(() => ({}));
+        throw new Error(body.error || resp.statusText);
+      }
+      return resp.json();
+    }
+    function quotaCell(q) {
+      if (!q || q.error) return `<div class="quota"><strong class="bad">${escapeHtml(q?.error || "-")}</strong></div>`;
+      const limit = q.limit_usd;
+      const used = Number(q.used_usd || 0);
+      const pct = Number(q.used_percent || 0);
+      const width = Math.max(0, Math.min(100, pct * 100));
+      const danger = pct >= 0.9;
+      return `<div class="quota">
+        <strong>${money(used)} / ${limitText(limit)}</strong>
+        <div class="bar ${danger ? "danger" : ""}"><span style="width:${width}%"></span></div>
+        <span class="muted">${q.reset_at_ms ? "清零点 " + time(q.reset_at_ms) : "未清零"}</span>
+      </div>`;
+    }
+    function renderKeys(keys) {
+      state.keys = keys || [];
+      state.savedLimits = new Map(state.keys.map(key => [
+        key.id,
+        {
+          five_hour_usd: normalizeLimit(key.limits?.five_hour_usd),
+          monthly_usd: normalizeLimit(key.limits?.monthly_usd),
+        },
+      ]));
+      const range = $("rangeSelect").value;
+      const enabled = state.keys.filter(k => k.enabled).length;
+      const total = state.keys.reduce((sum, key) => sum + Number(key.usage_windows?.[range]?.used_usd || 0), 0);
+      const risk = state.keys.filter(key => Number(key.usage_windows?.[range]?.used_percent || 0) >= 0.9).length;
+      $("keyCount").textContent = num(state.keys.length);
+      $("enabledCount").textContent = `启用 ${num(enabled)}`;
+      $("windowCost").textContent = money(total);
+      $("windowLabel").textContent = labels[range] || range;
+      $("riskCount").textContent = num(risk);
+      $("riskCount").className = `metric-value ${risk ? "warn" : "ok"}`;
+
+      $("keySelect").innerHTML = `<option value="all">全部 Key</option>` + state.keys.map(key => `<option value="${escapeHtml(key.id)}">${escapeHtml(key.name || key.id)}</option>`).join("");
+      if (!state.selectedKey) state.selectedKey = "all";
+      if (state.selectedKey !== "all" && !state.keys.some(key => key.id === state.selectedKey)) state.selectedKey = "all";
+      $("keySelect").value = state.selectedKey;
+
+      $("keyRows").innerHTML = state.keys.map(key => {
+        const limits = key.limits || {};
+        return `<tr>
+          <td><div class="cell-stack"><strong>${escapeHtml(key.name || "-")}</strong><span class="muted mono">${escapeHtml(key.preview || key.id)}</span></div></td>
+          <td><span class="chip ${key.enabled ? "ok" : "bad"}"><span class="dot"></span><span>${key.enabled ? "启用" : "停用"}</span></span><div class="muted">RPM ${key.rpm || "不限"}</div></td>
+          <td>${quotaCell(key.usage_windows?.["5h"])}</td>
+          <td>${quotaCell(key.usage_windows?.["24h"])}</td>
+          <td>${quotaCell(key.usage_windows?.["7d"])}</td>
+          <td>${quotaCell(key.usage_windows?.month)}</td>
+          <td>
+            <div class="cell-stack">
+              <label>5H <input data-limit="5h" data-key="${escapeHtml(key.id)}" value="${normalizeLimit(limits.five_hour_usd)}" placeholder="未设置"></label>
+              <label>月 <input data-limit="month" data-key="${escapeHtml(key.id)}" value="${normalizeLimit(limits.monthly_usd)}" placeholder="未设置"></label>
+            </div>
+          </td>
+          <td>
+            <div class="actions">
+              <button class="danger" data-reset="${escapeHtml(key.id)}" data-window="${escapeHtml(range)}">清零当前</button>
+              <button class="danger" data-reset="${escapeHtml(key.id)}" data-window="all">清零全部</button>
+            </div>
+          </td>
+        </tr>`;
+      }).join("") || '<tr><td colspan="8" class="empty">暂无 Key</td></tr>';
+      $("keyRows").querySelectorAll("input[data-key]").forEach(input => {
+        input.oninput = updateDirtyState;
+      });
+      $("keyRows").querySelectorAll("[data-reset]").forEach(button => {
+        button.onclick = () => resetUsage(button.getAttribute("data-reset"), button.getAttribute("data-window"));
+      });
+      updateDirtyState();
+    }
+    function collectLimitPayload() {
+      return state.keys.map(key => ({
+        id: key.id,
+        five_hour_usd: limitPayload(document.querySelector(`input[data-key="${CSS.escape(key.id)}"][data-limit="5h"]`)?.value),
+        monthly_usd: limitPayload(document.querySelector(`input[data-key="${CSS.escape(key.id)}"][data-limit="month"]`)?.value),
+      }));
+    }
+    function updateDirtyState() {
+      let dirty = false;
+      state.keys.forEach(key => {
+        const saved = state.savedLimits.get(key.id) || {};
+        const five = normalizeLimit(document.querySelector(`input[data-key="${CSS.escape(key.id)}"][data-limit="5h"]`)?.value);
+        const month = normalizeLimit(document.querySelector(`input[data-key="${CSS.escape(key.id)}"][data-limit="month"]`)?.value);
+        const row = document.querySelector(`input[data-key="${CSS.escape(key.id)}"]`)?.closest("tr");
+        const rowDirty = five !== (saved.five_hour_usd || "") || month !== (saved.monthly_usd || "");
+        if (row) row.classList.toggle("dirty-row", rowDirty);
+        dirty = dirty || rowDirty;
+      });
+      state.dirty = dirty;
+      setSaveState(dirty ? "warn" : "info", dirty ? "有未保存改动" : "无改动", dirty);
+    }
+    function detailList(items) {
+      return `<div class="detail-list">${items.map(([k, v]) => `<span>${escapeHtml(k)}</span><strong>${escapeHtml(v)}</strong>`).join("")}</div>`;
+    }
+    function cacheSemanticsNote(tokens) {
+      const semantics = tokens.cache_semantics || "cpamp_compatible_cached_tokens";
+      if (semantics === "raw_cache_tokens_normalized_to_cpamp") {
+        return "已按 CPAMP 公式把原始缓存桶归一化：兼容缓存 = max(cached_tokens, cache_tokens) - 细粒度读取 - 细粒度创建。";
+      }
+      return "OpenAI/Codex 的缓存命中主要记录在 CPAMP 兼容缓存中；细粒度 Cache Read / Write 为 0 仍可能是正常命中。";
+    }
+    function eventDetail(ev, id) {
+      const accounting = ev.accounting || {};
+      const quota = ev.quota || {};
+      const breakdown = ev.cost_breakdown || {};
+      const tokens = breakdown.tokens || {};
+      const costs = breakdown.costs || {};
+      const prices = breakdown.prices || {};
+      const included = (accounting.included_windows || []).map(x => labels[x] || x).join(" / ") || "-";
+      const failure = ev.failure || ev.failure_brief || "无失败详情";
+      return `<tr class="detail-row" ${state.expanded.has(id) ? "" : "hidden"}>
+        <td colspan="9">
+          <div class="detail-grid">
+            <div class="detail-card">
+              <h3>请求信息</h3>
+              ${detailList([
+                ["请求 ID", ev.request_id || "-"],
+                ["接口", ev.endpoint || "-"],
+                ["状态码", ev.status_code || "-"],
+                ["请求模型", ev.requested_model || "-"],
+                ["实际模型", ev.model || "-"],
+                ["Service Tier", ev.service_tier || "-"],
+                ["Reasoning Effort", ev.reasoning_effort || "-"],
+              ])}
+            </div>
+            <div class="detail-card">
+              <h3>Token 组成</h3>
+              ${detailList([
+                ["输入", num(tokens.input ?? ev.input_tokens)],
+                ["未缓存输入", num(tokens.billable_uncached_input ?? Math.max(Number(ev.input_tokens || 0) - Number(ev.cached_tokens || 0), 0))],
+                ["CPAMP 缓存命中", num(tokens.cpamp_cached_input ?? tokens.cached_input ?? ev.cached_tokens)],
+                ["细粒度 Cache Read", num(tokens.fine_grained_cache_read ?? tokens.cache_read ?? ev.cache_read_tokens)],
+                ["细粒度 Cache Write", num(tokens.fine_grained_cache_creation ?? tokens.cache_creation ?? ev.cache_creation_tokens)],
+                ["命中率估算", pct(tokens.cache_hit_rate)],
+                ["缓存活动合计", num(tokens.total_cache_activity ?? (Number(ev.cached_tokens || 0) + Number(ev.cache_read_tokens || 0) + Number(ev.cache_creation_tokens || 0)))],
+                ["输出", num(tokens.output ?? ev.output_tokens)],
+                ["思考量", num(tokens.reasoning ?? ev.reasoning_tokens)],
+                ["可见输出估算", num(tokens.visible_output_estimate ?? Math.max(Number(ev.output_tokens || 0) - Number(ev.reasoning_tokens || 0), 0))],
+                ["总量", num(tokens.total ?? ev.total_tokens)],
+              ])}
+              <p class="detail-note">${escapeHtml(cacheSemanticsNote(tokens))}</p>
+            </div>
+            <div class="detail-card">
+              <h3>费用组成</h3>
+              ${detailList([
+                ["价格模型", breakdown.price_model || ev.price_model || "-"],
+                ["来源", breakdown.source || ev.cost_source || "-"],
+                ["单位", breakdown.unit || "usd_per_1m_tokens"],
+                ["输入单价", prices.input_per_million == null ? "-" : `$${prices.input_per_million}/M`],
+                ["缓存读单价", prices.cache_read_per_million == null ? "-" : `$${prices.cache_read_per_million}/M`],
+                ["输出单价", prices.output_per_million == null ? "-" : `$${prices.output_per_million}/M`],
+                ["Tier 倍率", breakdown.service_tier_multiplier || 1],
+                ["输入费用", money(costs.input)],
+                ["缓存费用", money(costs.cache_total ?? (Number(costs.cached_input || 0) + Number(costs.cache_read || 0) + Number(costs.cache_creation || 0)))],
+                ["输出费用", money(costs.output)],
+                ["总费用", money(costs.total ?? ev.cost)],
+              ])}
+            </div>
+            <div class="detail-card">
+              <h3>限额与失败</h3>
+              ${detailList([
+                ["计入窗口", included],
+                ["当前窗口", labels[accounting.selected_range] || accounting.selected_range || "-"],
+                ["窗口限额", limitText(accounting.current_window_limit_usd)],
+                ["窗口剩余", limitText(accounting.current_window_remaining_usd)],
+                ["统计起点", time(accounting.reset_at_ms || accounting.window_from_ms)],
+                ["Provider Quota", quota.used_percent == null ? "-" : `${quota.used_percent}%`],
+              ])}
+              <div class="failure-box mono" style="margin-top:10px;">${escapeHtml(failure)}</div>
+            </div>
+          </div>
+        </td>
+      </tr>`;
+    }
+    function renderEvents(events, meta) {
+      const keyText = state.selectedKey === "all" ? "全部 Key" : ($("keySelect").selectedOptions[0]?.textContent || state.selectedKey);
+      const remaining = meta.quota ? ` · 估算剩余 ${limitText(meta.quota?.remaining_usd)}` : "";
+      $("eventsHint").textContent = `${keyText} · ${labels[meta.range] || meta.range} · ${time(meta.from_ms)} 至 ${time(meta.to_ms)}${remaining}`;
+      $("eventRows").innerHTML = (events || []).map((ev, index) => {
+        const id = ev.event_hash || ev.request_id || String(index);
+        const key = ev.key || {};
+        return `<tr class="data-row">
+          <td><div>${escapeHtml(time(ev.timestamp_ms))}</div><div class="muted mono">${escapeHtml(ev.request_id || "")}</div></td>
+          <td><div class="cell-stack"><strong>${escapeHtml(key.name || "未识别 Key")}</strong><span class="muted mono">${escapeHtml(key.preview || key.id || ev.api_key_preview || "-")}</span></div></td>
+          <td><span class="chip ${ev.failed ? "bad" : "ok"}"><span class="dot"></span><span>${ev.failed ? "失败" : "成功"}</span></span></td>
+          <td><div class="mono">${escapeHtml(ev.model || "-")}</div><div class="muted">${escapeHtml(ev.reasoning_effort || "")}</div></td>
+          <td><strong>${escapeHtml(duration(ev.latency_ms))}</strong><div class="muted">TTFT ${escapeHtml(duration(ev.ttft_ms))}</div></td>
+          <td><strong>${num(ev.total_tokens)}</strong><div class="muted">I ${num(ev.input_tokens)} / O ${num(ev.output_tokens)}</div></td>
+          <td><strong class="info">${num(ev.reasoning_tokens)}</strong></td>
+          <td>${money(ev.cost)}</td>
+          <td><button class="secondary" type="button" data-toggle="${escapeHtml(id)}">${state.expanded.has(id) ? "收起" : "展开"}</button></td>
+        </tr>${eventDetail(ev, id)}`;
+      }).join("") || '<tr><td colspan="9" class="empty">暂无请求记录</td></tr>';
+      $("eventRows").querySelectorAll("[data-toggle]").forEach(button => {
+        button.onclick = () => {
+          const id = button.getAttribute("data-toggle");
+          if (state.expanded.has(id)) state.expanded.delete(id);
+          else state.expanded.add(id);
+          renderEvents(events, meta);
+        };
+      });
+    }
+    async function refresh() {
+      $("refreshBtn").classList.add("is-loading");
+      setStatus("warn", "刷新中");
+      try {
+        const keys = await api(`${API_BASE}/api/keys`);
+        renderKeys(keys.keys || []);
+        const range = $("rangeSelect").value;
+        const keyId = state.selectedKey || "all";
+        const events = await api(`${API_BASE}/api/events?key_id=${encodeURIComponent(keyId)}&range=${encodeURIComponent(range)}&limit=100`);
+        renderEvents(events.events || [], events);
+        setStatus("ok", "已刷新");
+      } catch (err) {
+        setStatus("bad", err.message || "刷新失败");
+      } finally {
+        $("refreshBtn").classList.remove("is-loading");
+      }
+    }
+    async function saveAllLimits() {
+      if (!state.dirty) return;
+      setSaveState("warn", "保存中", true);
+      $("saveAllBtn").classList.add("is-loading");
+      try {
+        await api(`${API_BASE}/api/keys/limits`, {
+          method: "PUT",
+          body: JSON.stringify({ limits: collectLimitPayload() }),
+        });
+        setSaveState("ok", "已保存", false);
+        await refresh();
+      } catch (err) {
+        setSaveState("bad", err.message || "保存失败", true);
+      } finally {
+        $("saveAllBtn").classList.remove("is-loading");
+      }
+    }
+    async function saveLimits(keyId) {
+      const five = document.querySelector(`input[data-key="${CSS.escape(keyId)}"][data-limit="5h"]`)?.value ?? "";
+      const month = document.querySelector(`input[data-key="${CSS.escape(keyId)}"][data-limit="month"]`)?.value ?? "";
+      await api(`${API_BASE}/api/keys/${encodeURIComponent(keyId)}/limits`, {
+        method: "PUT",
+        body: JSON.stringify({ five_hour_usd: five === "" ? null : Number(five), monthly_usd: month === "" ? null : Number(month) }),
+      });
+      await refresh();
+    }
+    async function resetUsage(keyId, windowName) {
+      const ok = window.confirm(`确认清零 ${windowName === "all" ? "全部窗口" : labels[windowName]}？这只影响自有门户统计，不删除 CPAMP 原始记录。`);
+      if (!ok) return;
+      await api(`${API_BASE}/api/keys/${encodeURIComponent(keyId)}/reset`, {
+        method: "POST",
+        body: JSON.stringify({ window: windowName }),
+      });
+      await refresh();
+    }
+    $("refreshBtn").onclick = refresh;
+    $("saveAllBtn").onclick = saveAllLimits;
+    $("rangeSelect").onchange = refresh;
+    $("keySelect").onchange = () => {
+      state.selectedKey = $("keySelect").value;
+      refresh();
+    };
+    refresh();
+  </script>
+</body>
+</html>

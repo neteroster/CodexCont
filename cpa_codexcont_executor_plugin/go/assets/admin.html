@@ -1,0 +1,306 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>CodexCont Executor</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0b1220;
+      --panel: #111827;
+      --panel-2: #151f2f;
+      --line: #253244;
+      --text: #e5edf8;
+      --muted: #94a3b8;
+      --blue: #60a5fa;
+      --green: #7ddc75;
+      --amber: #f7c86a;
+      --red: #fb8b8b;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: Inter, "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+      font-size: 14px;
+    }
+    .shell { width: min(1480px, 100%); margin: 0 auto; padding: 22px; }
+    .topbar, .panel, .metric {
+      border: 1px solid var(--line);
+      background: var(--panel);
+      border-radius: 8px;
+    }
+    .topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 16px;
+      margin-bottom: 14px;
+    }
+    .brand { display: flex; align-items: center; gap: 12px; min-width: 0; }
+    .mark {
+      width: 38px; height: 38px; border-radius: 8px;
+      display: grid; place-items: center; font-weight: 900;
+      color: #05111f; background: var(--blue);
+    }
+    h1, h2 { margin: 0; letter-spacing: 0; }
+    h1 { font-size: 20px; }
+    h2 { font-size: 15px; }
+    .subtitle, .muted, small { color: var(--muted); }
+    .subtitle { margin: 4px 0 0; }
+    .toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; justify-content: flex-end; }
+    button, select {
+      min-height: 34px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel-2);
+      color: var(--text);
+      padding: 0 12px;
+      font: inherit;
+    }
+    button { cursor: pointer; font-weight: 760; }
+    button:disabled { cursor: wait; opacity: .7; }
+    .chip {
+      display: inline-flex; align-items: center; gap: 6px;
+      min-height: 28px; padding: 0 9px;
+      border: 1px solid var(--line); border-radius: 999px;
+      background: var(--panel-2); white-space: nowrap; font-weight: 760;
+    }
+    .dot { width: 8px; height: 8px; border-radius: 999px; background: var(--muted); }
+    .ok { color: var(--green); border-color: rgba(125, 220, 117, .35); }
+    .ok .dot { background: var(--green); }
+    .info { color: var(--blue); border-color: rgba(96, 165, 250, .35); }
+    .info .dot { background: var(--blue); }
+    .warn { color: var(--amber); border-color: rgba(247, 200, 106, .35); }
+    .warn .dot { background: var(--amber); }
+    .bad { color: var(--red); border-color: rgba(251, 139, 139, .35); }
+    .bad .dot { background: var(--red); }
+    .metrics {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(140px, 1fr));
+      gap: 10px;
+      margin-bottom: 14px;
+    }
+    .metric { padding: 13px; min-width: 0; }
+    .metric .label { color: var(--muted); font-size: 12px; font-weight: 760; }
+    .metric .value { margin-top: 6px; font-size: 22px; font-weight: 860; }
+    .metric .hint { margin-top: 4px; color: var(--muted); font-size: 12px; }
+    .panel { margin-bottom: 14px; overflow: hidden; }
+    .panel-head {
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 12px; padding: 13px 14px; border-bottom: 1px solid var(--line);
+    }
+    .table-wrap { overflow-x: auto; }
+    table { width: 100%; min-width: 1080px; border-collapse: collapse; }
+    th, td { padding: 11px 13px; border-bottom: 1px solid rgba(37, 50, 68, .72); text-align: left; vertical-align: top; }
+    th { color: var(--muted); font-size: 12px; font-weight: 820; }
+    tr.new-row td { animation: flash 1200ms ease-out; }
+    @keyframes flash { 0% { background: rgba(96,165,250,.16); } 100% { background: transparent; } }
+    .mono { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+    .empty { padding: 24px; color: var(--muted); text-align: center; }
+    .detail {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(180px, 1fr));
+      gap: 10px;
+      padding: 12px;
+      background: #0d1523;
+    }
+    .detail section { border: 1px solid var(--line); border-radius: 8px; padding: 10px; background: #101928; }
+    .detail h3 { margin: 0 0 8px; font-size: 13px; }
+    dl { display: grid; grid-template-columns: 92px 1fr; gap: 6px 10px; margin: 0; }
+    dt { color: var(--muted); }
+    dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+    @media (max-width: 760px) {
+      .shell { padding: 12px; }
+      .topbar { align-items: flex-start; flex-direction: column; }
+      .toolbar { justify-content: flex-start; }
+      .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .detail { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+<main class="shell">
+  <header class="topbar">
+    <div class="brand">
+      <div class="mark">CE</div>
+      <div>
+        <h1>CodexCont Executor</h1>
+        <p class="subtitle">实时滚动监控</p>
+      </div>
+    </div>
+    <div class="toolbar">
+      <span id="live-chip" class="chip warn"><span class="dot"></span><span>连接中</span></span>
+      <span id="route-chip" class="chip"><span class="dot"></span><span>route -</span></span>
+      <button id="refresh" type="button">刷新</button>
+    </div>
+  </header>
+
+  <section id="metrics" class="metrics"></section>
+
+  <section class="panel">
+    <div class="panel-head">
+      <h2>最近保护请求</h2>
+      <select id="filter" aria-label="保护状态">
+        <option value="">全部</option>
+        <option value="processing">处理中</option>
+        <option value="protected_clean">已保护</option>
+        <option value="auto_continued">已自动续写</option>
+        <option value="risk_uncontinued">疑似截断</option>
+        <option value="failed">失败</option>
+        <option value="incomplete">未完整</option>
+      </select>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th style="width:170px">时间</th>
+            <th style="width:170px">请求</th>
+            <th style="width:128px">保护</th>
+            <th style="width:150px">模型</th>
+            <th style="width:110px">耗时</th>
+            <th style="width:130px">命中轮</th>
+            <th style="width:140px">末轮 reasoning</th>
+            <th style="width:110px">续写</th>
+            <th style="width:90px">操作</th>
+          </tr>
+        </thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </div>
+  </section>
+</main>
+
+<script>
+const RESOURCE_API = "/v0/resource/plugins/cpa-codexcont-executor/admin/api";
+const MANAGEMENT_API = "/v0/management/plugins/cpa-codexcont-executor";
+const API = String(window.CPA_CODEXCONT_EXECUTOR_API_BASE || (location.pathname.includes("/v0/resource/plugins/cpa-codexcont-executor/admin") ? RESOURCE_API : MANAGEMENT_API)).replace(/\/$/, "");
+const POLL_MS = 2200;
+const state = { summaries: [], seen: new Set(), expanded: new Set(), timer: 0, busy: false };
+const labels = {
+  processing: ["处理中", "info"],
+  protected_clean: ["已保护", "ok"],
+  auto_continued: ["已自动续写", "info"],
+  risk_uncontinued: ["疑似截断", "warn"],
+  failed: ["失败", "bad"],
+  incomplete: ["未完整", "warn"],
+  passthrough: ["透传", "warn"]
+};
+const esc = (v) => String(v ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));
+const num = (v) => Number(v || 0).toLocaleString();
+const dt = (v) => v ? new Date(v).toLocaleString() : "-";
+function chip(value){
+  const item = labels[value] || [value || "未知", ""];
+  return `<span class="chip ${item[1]}"><span class="dot"></span>${esc(item[0])}</span>`;
+}
+function setLive(kind, text){
+  const el = document.getElementById("live-chip");
+  el.className = `chip ${kind}`;
+  el.querySelector("span:last-child").textContent = text;
+}
+async function api(path){
+  const sep = path.includes("?") ? "&" : "?";
+  const resp = await fetch(API + path + sep + "_=" + Date.now(), {cache: "no-store", credentials: "same-origin"});
+  if (!resp.ok) throw new Error(String(resp.status));
+  return resp.json();
+}
+function timeOf(row){
+  return Date.parse(row.updated_at || row.ended_at || row.started_at || "") || 0;
+}
+function renderMetrics(status){
+  const rows = state.summaries;
+  const continued = rows.filter(r => r.protection === "auto_continued").length;
+  const risky = rows.filter(r => r.protection === "risk_uncontinued").length;
+  const failed = rows.filter(r => r.protection === "failed").length;
+  const processing = rows.filter(r => r.protection === "processing").length;
+  document.getElementById("route-chip").className = `chip ${status?.route_enabled ? "ok" : "warn"}`;
+  document.getElementById("route-chip").querySelector("span:last-child").textContent = `route ${status?.route_enabled ? "on" : "off"}`;
+  document.getElementById("metrics").innerHTML = `
+    <article class="metric"><div class="label">滚动窗口</div><div class="value">${num(rows.length)}</div><div class="hint">最近 120 条</div></article>
+    <article class="metric"><div class="label">处理中</div><div class="value">${num(processing)}</div><div class="hint">executor 内存态</div></article>
+    <article class="metric"><div class="label">自动续写</div><div class="value">${num(continued)}</div><div class="hint">隐藏 continuation</div></article>
+    <article class="metric"><div class="label">疑似截断</div><div class="value">${num(risky)}</div><div class="hint">518n-2 未续写</div></article>
+    <article class="metric"><div class="label">失败</div><div class="value">${num(failed)}</div><div class="hint">executor / upstream</div></article>`;
+}
+function detail(row){
+  const rounds = Array.isArray(row.rounds) ? row.rounds : [];
+  const roundText = rounds.length ? rounds.map(r => `#${esc(r.round)} reasoning ${esc(r.reasoning_tokens ?? "-")} / ${esc(r.decision || "-")}`).join("<br>") : "无轮次摘要";
+  return `<tr><td colspan="9"><div class="detail">
+    <section><h3>请求</h3><dl><dt>ID</dt><dd class="mono">${esc(row.request_id)}</dd><dt>Key</dt><dd>${esc((row.key_identity || {}).id || "-")}</dd><dt>状态</dt><dd>${esc(row.final_status || row.status || "-")}</dd></dl></section>
+    <section><h3>触发</h3><dl><dt>命中轮</dt><dd>${esc(row.first_truncation_round ?? "-")}</dd><dt>命中 tokens</dt><dd>${esc(row.first_truncation_reasoning_tokens ?? "-")}</dd><dt>决策</dt><dd>${esc(row.first_truncation_decision || "-")}</dd></dl></section>
+    <section><h3>轮次</h3><p class="muted">${roundText}</p></section>
+    <section><h3>停止 / 失败</h3><dl><dt>停止原因</dt><dd>${esc(row.stopped_reason || "-")}</dd><dt>失败原因</dt><dd>${esc(row.failure_reason || "-")}</dd><dt>耗时</dt><dd>${row.duration_ms == null ? "-" : num(row.duration_ms) + " ms"}</dd></dl></section>
+  </div></td></tr>`;
+}
+function renderRows(){
+  const filter = document.getElementById("filter").value;
+  let rows = [...state.summaries].sort((a,b) => timeOf(b) - timeOf(a));
+  if (filter) rows = rows.filter(r => r.protection === filter);
+  const body = document.getElementById("rows");
+  if (!rows.length) {
+    body.innerHTML = `<tr><td colspan="9"><div class="empty">暂无请求</div></td></tr>`;
+    return;
+  }
+  body.innerHTML = rows.map(row => {
+    const id = String(row.request_id || "");
+    const open = state.expanded.has(id);
+    const fresh = !state.seen.has(id);
+    state.seen.add(id);
+    const main = `<tr class="${fresh ? "new-row" : ""}">
+      <td>${dt(row.updated_at || row.started_at)}<small class="mono">${esc(row.status || row.final_status || "")}</small></td>
+      <td class="mono">${esc(id)}</td>
+      <td>${chip(row.protection)}</td>
+      <td>${esc(row.model || "-")}</td>
+      <td>${row.duration_ms == null ? "-" : num(row.duration_ms) + " ms"}</td>
+      <td>${row.first_truncation_round == null ? "-" : "#" + esc(row.first_truncation_round)}</td>
+      <td>${row.latest_reasoning_tokens == null ? "-" : num(row.latest_reasoning_tokens)}</td>
+      <td>${num(row.continuation_count)}</td>
+      <td><button type="button" data-toggle="${esc(id)}">${open ? "收起" : "展开"}</button></td>
+    </tr>`;
+    return main + (open ? detail(row) : "");
+  }).join("");
+  body.querySelectorAll("[data-toggle]").forEach(btn => btn.onclick = () => {
+    const id = btn.getAttribute("data-toggle");
+    if (state.expanded.has(id)) state.expanded.delete(id); else state.expanded.add(id);
+    renderRows();
+  });
+}
+async function refresh(force=false){
+  if (state.busy && !force) return;
+  state.busy = true;
+  document.getElementById("refresh").disabled = true;
+  setLive("info", "同步中");
+  try {
+    const [status, summaries] = await Promise.all([api("/status"), api("/summaries?limit=120")]);
+    state.summaries = summaries.summaries || [];
+    renderMetrics(status.executor || status);
+    renderRows();
+    setLive("ok", "实时刷新");
+  } catch (err) {
+    setLive("bad", "同步失败");
+  } finally {
+    state.busy = false;
+    document.getElementById("refresh").disabled = false;
+  }
+}
+function schedule(){
+  clearInterval(state.timer);
+  state.timer = setInterval(() => {
+    if (!document.hidden) refresh(false);
+  }, POLL_MS);
+}
+document.getElementById("refresh").onclick = () => refresh(true);
+document.getElementById("filter").onchange = renderRows;
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) refresh(true);
+});
+window.addEventListener("pageshow", () => refresh(true));
+refresh(true);
+schedule();
+</script>
+</body>
+</html>

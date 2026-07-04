@@ -20,3 +20,19 @@ rt.json
 free_rt.json
 
 legacy/
+
+# Local browser/test/build artifacts
+.playwright-cli/
+artifacts/
+cpa_governor_plugin/dist/
+cpa_governor_plugin/go/*.sqlite*
+cpa_key_policy_plus_plugin/dist/
+cpa_key_policy_plus_plugin/go/build/
+cpa_key_policy_plus_plugin/go/*.sqlite*
+cpa_key_policy_plus_plugin/go/*.so
+cpa_key_policy_plus_plugin/go/*.h
+cpa_codexcont_executor_plugin/dist/
+cpa_codexcont_executor_plugin/go/build/
+cpa_codexcont_executor_plugin/go/*.sqlite*
+cpa_codexcont_executor_plugin/go/*.so
+cpa_codexcont_executor_plugin/go/*.h

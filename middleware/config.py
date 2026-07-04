@@ -72,6 +72,12 @@ class LogCfg:
 
 
 @dataclass(frozen=True)
+class AdminCfg:
+    max_log_events: int = 800
+    key_policy_state_path: str = ""
+
+
+@dataclass(frozen=True)
 class Config:
     server: ServerCfg = field(default_factory=ServerCfg)
     upstream: UpstreamCfg = field(default_factory=UpstreamCfg)
@@ -79,6 +85,7 @@ class Config:
     cont: ContinueCfg = field(default_factory=ContinueCfg)
     stream: StreamCfg = field(default_factory=StreamCfg)
     log: LogCfg = field(default_factory=LogCfg)
+    admin: AdminCfg = field(default_factory=AdminCfg)
     # Directory config.toml lived in (for resolving relative paths if needed).
     root: Path = field(default_factory=lambda: Path.cwd())
 
@@ -108,6 +115,7 @@ def load_config(path: str | Path) -> Config:
     cont = _section(data, "continue")
     stream = _section(data, "stream")
     log = _section(data, "log")
+    admin = _section(data, "admin")
 
     # listen_paths is a list in TOML; store as tuple.
     if "listen_paths" in server and isinstance(server["listen_paths"], list):
@@ -125,6 +133,7 @@ def load_config(path: str | Path) -> Config:
         cont=ContinueCfg(**_only_known(ContinueCfg, cont)),
         stream=StreamCfg(**_only_known(StreamCfg, stream)),
         log=LogCfg(**_only_known(LogCfg, log)),
+        admin=AdminCfg(**_only_known(AdminCfg, admin)),
         root=path.resolve().parent if path.exists() else Path.cwd(),
     )
 

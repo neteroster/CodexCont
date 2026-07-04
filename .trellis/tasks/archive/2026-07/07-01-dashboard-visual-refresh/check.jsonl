@@ -1,0 +1,2 @@
+{"file": ".trellis/spec/backend/codex-continuation-contracts.md", "reason": "Verify dashboard data contracts, route exposure, and sidecar boundaries"}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "General backend and frontend smoke quality gate"}

@@ -107,6 +107,46 @@ Security guard: if a request supplies `Responses-API-Base`, the middleware will 
 
 Do not commit secrets. `rt.json` and `free_rt.json` are ignored by `.gitignore`, and tokens in `config.toml` should be handled carefully.
 
+## Dashboard
+
+CodexCont serves a lightweight read-only dashboard at:
+
+```text
+http://127.0.0.1:8787/admin/
+```
+
+It exposes service status, upstream health, in-memory request metrics, recent request protection summaries, and live redacted logs through SSE. The request view distinguishes protected-clean, auto-continued, risky-uncontinued, passthrough, failed, and incomplete requests. Log history is memory-only and bounded by:
+
+```toml
+[admin]
+max_log_events = 800
+key_policy_state_path = "" # optional; set to the CPA Key Policy state JSON to show safe key names
+```
+
+When running in Docker, this must be a path visible inside the CodexCont
+container. For example, mount the CPA plugin state read-only and set
+`key_policy_state_path = "/data/plugin-state/cpa-key-policy-state.json"`.
+
+Do not expose `/admin/` on a public API hostname unless it is protected by an external access layer such as Cloudflare Access.
+
+## CPA Usage Portal
+
+This repository also includes a small self-service sidecar in `cpa_usage_portal/`.
+It is designed to sit next to CPA Manager Plus and CPA Key Policy: users log in
+with their own `cpa_...` key and can only see usage filtered to that key. The
+portal validates login with the raw key's Key Policy hash, but filters CPAMP
+usage with `sha256(Key Policy id)` because the plugin authenticates to CPA as
+the key id. Raw API keys, OAuth tokens, management keys, request bodies,
+response bodies, and encrypted reasoning content are never returned.
+
+Run locally:
+
+```bash
+.venv/Scripts/python.exe run_usage_portal.py
+```
+
+Docker deployment templates live in `deploy/cpa-usage-portal/`.
+
 ## When continuation is applied
 
 The middleware folds only when all of the following are true:
@@ -163,25 +203,32 @@ Current offline coverage includes:
 - header transparency
 - upstream URL resolution
 - auth safety guard
+- dashboard diagnostics and admin route smoke
+- CPA usage portal hash/session/filtering/redaction/retention behavior
 - EOF/upstream-error behavior
 
 ## Project layout
 
 ```text
 middleware/
+  admin.py     # read-only dashboard/admin routes
   app.py       # Starlette app and route handler
   codex.py     # truncation math and continuation payload builders
   config.py    # config.toml loader and dataclasses
   creds.py     # upstream header/auth construction
+  dashboard.html # static dashboard page
+  diagnostics.py # in-memory metrics, ring buffer, and SSE subscribers
   proxy.py     # fold_stream state machine
   sse.py       # incremental SSE parser/serializer
   store.py     # in-memory ID store for optional stateful repair
 
 tests/
   test_middleware.py
+  test_cpa_usage_portal.py
   fixtures/
 
 run.py         # uvicorn entrypoint
+run_usage_portal.py # CPA usage portal entrypoint
 config.example.toml # example runtime configuration; copy to config.toml for local use
 ```
 

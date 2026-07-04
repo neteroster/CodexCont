@@ -50,3 +50,6 @@ rechunk_size = 16
 [log]
 level = "info"
 dump_rounds_dir = ""               # if set, dump per-round upstream SSE (codex_mw_r{n}.sse.txt)
+
+[admin]
+max_log_events = 800               # memory-only dashboard log retention; no log files are written

@@ -25,6 +25,7 @@ from .codex import (
     tier_n,
 )
 from .config import Config
+from .diagnostics import Diagnostics
 from .sse import DONE, incremental_sse, serialize_done, serialize_event
 
 log = logging.getLogger("middleware.proxy")
@@ -294,6 +295,8 @@ async def fold_stream(
     first_response: httpx.Response,
     id_store: Any | None = None,
     url: str | None = None,
+    diagnostics: Diagnostics | None = None,
+    request_id: str | None = None,
 ) -> AsyncIterator[bytes]:
     """Yield the folded downstream SSE byte stream. `first_response` is the
     already-opened (2xx) round-1 upstream response; later rounds are opened here
@@ -317,6 +320,7 @@ async def fold_stream(
 
     response = first_response
     round_no = 0
+    closed = False
 
     try:
         while True:
@@ -434,12 +438,29 @@ async def fold_stream(
                 else "upstream_eof" if not saw_terminal
                 else stopped_reason or "clean"
             )
+            if diagnostics and request_id:
+                diagnostics.round_decision(
+                    request_id,
+                    round_no=round_no,
+                    reasoning_tokens=rt,
+                    n=n,
+                    decision=decision,
+                    buffered=buffered,
+                    truncation_match=is_truncation_pattern(rt, cont.truncation_step),
+                )
             log.info("round %d: %s | n=%s buffered=%s -> %s",
                      round_no, _fmt_usage(usage), n, buffered or "[]", decision)
 
             await response.aclose()
 
             if do_continue:
+                if diagnostics and request_id:
+                    diagnostics.continuation_opened(
+                        request_id,
+                        from_round=round_no,
+                        next_round=round_no + 1,
+                        method=cont.method,
+                    )
                 last_id = round_reasoning[-1].get("id") or ""
                 if cont.method == "commentary":
                     marker_items = [commentary_message(cont.marker_text)]
@@ -485,6 +506,13 @@ async def fold_stream(
                                 response.status_code, body)
                     log.info("done: %d round(s) | %s | status=incomplete stop=upstream_error",
                              round_no, _fmt_usage(total_usage))
+                    if diagnostics and request_id:
+                        closed = True
+                        diagnostics.request_failed(
+                            request_id,
+                            reason="continuation_upstream_error",
+                            detail={"round": round_no + 1, "status_code": response.status_code},
+                        )
                     yield serialize_event(
                         _synthetic_incomplete(
                             base_response, final_output,
@@ -503,6 +531,11 @@ async def fold_stream(
                 log.warning("round %d: upstream EOF with no terminal event", round_no)
                 log.info("done: %d round(s) | %s | status=incomplete stop=upstream_eof",
                          round_no, _fmt_usage(total_usage))
+                if diagnostics and request_id:
+                    closed = True
+                    diagnostics.request_finished(
+                        request_id, status="incomplete", stopped_reason="upstream_eof"
+                    )
                 yield serialize_event(
                     _synthetic_incomplete(
                         base_response, final_output,
@@ -521,6 +554,11 @@ async def fold_stream(
             status = ((terminal or {}).get("response") or {}).get("status", "completed")
             log.info("done: %d round(s) | %s | status=%s stop=%s",
                      round_no, _fmt_usage(total_usage), status, stopped_reason or "natural")
+            if diagnostics and request_id:
+                closed = True
+                diagnostics.request_finished(
+                    request_id, status=status, stopped_reason=stopped_reason or "natural"
+                )
             yield serialize_event(
                 _reconstruct_terminal(
                     terminal, base_response, final_output,
@@ -535,6 +573,9 @@ async def fold_stream(
         log.warning("upstream error mid-stream (round %d): %r", round_no, exc)
         log.info("done: %d round(s) | %s | status=incomplete stop=upstream_error",
                  round_no, _fmt_usage(total_usage))
+        if diagnostics and request_id:
+            closed = True
+            diagnostics.request_failed(request_id, reason="upstream_stream_error", detail=repr(exc))
         yield serialize_event(
             _synthetic_incomplete(
                 base_response, final_output,
@@ -543,6 +584,8 @@ async def fold_stream(
         )
         return
     finally:
+        if diagnostics and request_id and not closed:
+            diagnostics.request_finished(request_id, status="closed")
         try:
             await response.aclose()
         except Exception:

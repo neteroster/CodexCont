@@ -5,6 +5,8 @@ unchanged. The proxy invents nothing (no User-Agent / Content-Type / Accept of
 its own). Two exceptions:
   1. client-owned headers (Host, Content-Length, ...) are dropped so httpx sets
      them correctly — the body length changes when we merge `include`.
+     Content-Encoding is also dropped because encoded agent bodies are decoded
+     before the middleware inspects or forwards them.
   2. credentials (Authorization, chatgpt-account-id) follow the auth mode, with
      the token / account id supplied directly from config.toml `[auth]`.
 """
@@ -25,6 +27,7 @@ _CLIENT_OWNED = {
     "proxy-connection",
     "transfer-encoding",
     "accept-encoding",
+    "content-encoding",
 }
 
 _AUTH = "authorization"

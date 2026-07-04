@@ -1,0 +1,3 @@
+{"_example": "Fill with {\"file\": \"<path>\", \"reason\": \"<why>\"}. Put spec/research files only — no code paths. Run `python .trellis/scripts/get_context.py --mode packages` to list available specs. Delete this line once real entries are added."}
+{"file": "cpa_key_policy_plus_plugin/go/main_test.go", "reason": "policy denial, admin UI, user portal tests"}
+{"file": "cpa_key_policy_plus_plugin/go/internal/policyplus/policyplus_test.go", "reason": "native sync and key hint tests"}

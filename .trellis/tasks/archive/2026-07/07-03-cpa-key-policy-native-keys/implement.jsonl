@@ -1,0 +1,6 @@
+{"_example": "Fill with {\"file\": \"<path>\", \"reason\": \"<why>\"}. Put spec/research files only — no code paths. Run `python .trellis/scripts/get_context.py --mode packages` to list available specs. Delete this line once real entries are added."}
+{"file": "cpa_key_policy_plus_plugin/go/internal/policyplus/models.go", "reason": "native key fields and safe projections"}
+{"file": "cpa_key_policy_plus_plugin/go/main.go", "reason": "structured policy decisions and deny-only 429 route"}
+{"file": "cpa_key_policy_plus_plugin/go/internal/policyplus/store.go", "reason": "native CPA config sync, alias DB reader, lifecycle state"}
+{"file": "cpa_key_policy_plus_plugin/go/assets/admin.html", "reason": "policy-only admin UI"}
+{"file": "cpa_key_policy_plus_plugin/go/assets/user.html", "reason": "native sk key login guidance"}

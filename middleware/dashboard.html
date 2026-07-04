@@ -1,0 +1,954 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" href="data:,">
+  <title>CodexCont 保护状态面板</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0b1220;
+      --panel: #151d2c;
+      --panel-2: #1a2434;
+      --line: #283448;
+      --line-strong: #33445e;
+      --text: #e8edf5;
+      --muted: #9aa7b8;
+      --blue: #3b96ff;
+      --blue-soft: rgba(59, 150, 255, .14);
+      --green: #61d34f;
+      --green-soft: rgba(97, 211, 79, .13);
+      --red: #ff646d;
+      --red-soft: rgba(255, 100, 109, .13);
+      --amber: #f0aa2b;
+      --amber-soft: rgba(240, 170, 43, .14);
+      --teal: #15c7d4;
+      --teal-soft: rgba(21, 199, 212, .12);
+      --violet: #8d7cff;
+      --violet-soft: rgba(141, 124, 255, .13);
+      --shadow: 0 18px 48px rgba(0, 0, 0, .26);
+      --mono: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+      --sans: Inter, "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+      font-family: var(--sans);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background:
+        radial-gradient(circle at 60% -10%, rgba(59, 150, 255, .16), transparent 30%),
+        linear-gradient(180deg, #101827 0%, var(--bg) 38%, #080e19 100%);
+      color: var(--text);
+      font: 14px/1.48 var(--sans);
+      letter-spacing: 0;
+    }
+    button, select, input {
+      min-height: 38px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #111827;
+      color: var(--text);
+      padding: 0 12px;
+      font: inherit;
+    }
+    input { min-width: 260px; }
+    button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    #refresh-btn { min-width: 72px; }
+    button.active, button:hover, select:hover, input:focus {
+      border-color: var(--line-strong);
+      outline: none;
+    }
+    button.primary {
+      border-color: transparent;
+      background: linear-gradient(180deg, #43a2ff, #2d86ef);
+      font-weight: 760;
+    }
+    button.is-loading::before {
+      content: "";
+      width: 14px;
+      height: 14px;
+      border: 2px solid rgba(232, 237, 245, .28);
+      border-top-color: currentColor;
+      border-radius: 50%;
+      animation: spin .75s linear infinite;
+    }
+    button.refresh-flash {
+      animation: buttonPulse .8s ease;
+    }
+    .shell {
+      width: min(1680px, calc(100% - 32px));
+      margin: 0 auto;
+      padding: 22px 0 34px;
+    }
+    .topbar {
+      min-height: 58px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 0 16px;
+      margin-bottom: 16px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: rgba(17, 24, 39, .9);
+      box-shadow: var(--shadow);
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      min-width: 0;
+    }
+    .brand > div { min-width: 0; }
+    .mark {
+      width: 34px;
+      height: 34px;
+      display: grid;
+      place-items: center;
+      border-radius: 8px;
+      background: linear-gradient(135deg, #2d86ef, #15c7d4);
+      color: #fff;
+      font-weight: 850;
+    }
+    h1, h2, h3, p { margin: 0; }
+    h1 {
+      font-size: 20px;
+      line-height: 1.2;
+      font-weight: 780;
+    }
+    h2 { font-size: 15px; font-weight: 760; }
+    h3 { font-size: 13px; font-weight: 760; }
+    .subtitle {
+      margin-top: 2px;
+      color: var(--muted);
+      font-size: 12px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .toolbar, .filters {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      min-height: 32px;
+      padding: 0 10px;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      background: var(--panel-2);
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 720;
+      line-height: 1.2;
+      white-space: nowrap;
+    }
+    .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--muted);
+      position: relative;
+      flex: 0 0 auto;
+    }
+    .chip.stream .dot {
+      animation: statusBlink 1.45s ease-in-out infinite;
+    }
+    .chip.stream .dot::after {
+      content: "";
+      position: absolute;
+      inset: -5px;
+      border-radius: inherit;
+      border: 1px solid currentColor;
+      opacity: .55;
+      animation: statusPing 1.45s ease-out infinite;
+    }
+    .chip.ok { border-color: rgba(97, 211, 79, .28); background: var(--green-soft); color: #a8ef9c; }
+    .chip.ok .dot { background: var(--green); }
+    .chip.live { border-color: rgba(21, 199, 212, .28); background: var(--teal-soft); color: #a1eef3; }
+    .chip.live .dot { background: var(--teal); }
+    .chip.warn { border-color: rgba(240, 170, 43, .34); background: var(--amber-soft); color: #ffd083; }
+    .chip.warn .dot { background: var(--amber); }
+    .chip.bad { border-color: rgba(255, 100, 109, .34); background: var(--red-soft); color: #ffb5ba; }
+    .chip.bad .dot { background: var(--red); }
+    .chip.info { border-color: rgba(59, 150, 255, .34); background: var(--blue-soft); color: #acd4ff; }
+    .chip.info .dot { background: var(--blue); }
+    .chip.neutral { border-color: var(--line); background: #202b3d; color: #c4cfdd; }
+    .metrics {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(160px, 1fr));
+      gap: 12px;
+      margin-bottom: 14px;
+    }
+    .metric {
+      min-height: 126px;
+      position: relative;
+      overflow: hidden;
+      padding: 15px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: linear-gradient(180deg, rgba(26, 36, 52, .96), rgba(21, 29, 44, .96));
+    }
+    .metric-label {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 760;
+    }
+    .metric-icon {
+      width: 28px;
+      height: 28px;
+      display: inline-grid;
+      place-items: center;
+      border-radius: 8px;
+      background: var(--blue-soft);
+      color: var(--blue);
+      font-weight: 850;
+    }
+    .metric-icon.ok { background: var(--green-soft); color: var(--green); }
+    .metric-icon.bad { background: var(--red-soft); color: var(--red); }
+    .metric-icon.warn { background: var(--amber-soft); color: var(--amber); }
+    .metric-icon.teal { background: var(--teal-soft); color: var(--teal); }
+    .metric-value {
+      position: relative;
+      z-index: 1;
+      margin-top: 18px;
+      font-size: 30px;
+      line-height: 1;
+      font-weight: 800;
+    }
+    .metric-hint {
+      position: relative;
+      z-index: 1;
+      margin-top: 9px;
+      color: var(--muted);
+      font-size: 12px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .section {
+      margin-bottom: 14px;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: rgba(21, 29, 44, .96);
+      box-shadow: 0 14px 34px rgba(0, 0, 0, .18);
+    }
+    .section-head {
+      min-height: 60px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--line);
+      background: rgba(26, 36, 52, .8);
+    }
+    .section-title { display: grid; gap: 3px; }
+    .muted { color: var(--muted); }
+    .table-wrap {
+      overflow-x: auto;
+      background: #121a29;
+    }
+    table {
+      width: 100%;
+      min-width: 1120px;
+      border-collapse: separate;
+      border-spacing: 0 8px;
+      table-layout: fixed;
+      padding: 8px 10px 12px;
+    }
+    th {
+      padding: 0 10px 4px;
+      color: var(--muted);
+      text-align: left;
+      font-size: 12px;
+      font-weight: 760;
+      white-space: nowrap;
+    }
+    td {
+      padding: 13px 10px;
+      border-top: 1px solid var(--line);
+      border-bottom: 1px solid var(--line);
+      background: #161e2d;
+      vertical-align: middle;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    tbody tr.data-row td:first-child { border-left: 1px solid var(--line); border-radius: 8px 0 0 8px; }
+    tbody tr.data-row td:last-child { border-right: 1px solid var(--line); border-radius: 0 8px 8px 0; }
+    tbody tr.detail-row td {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #111827;
+      overflow: visible;
+      text-overflow: clip;
+    }
+    .col-time { width: 178px; }
+    .col-key { width: 170px; }
+    .col-protect { width: 205px; }
+    .col-model { width: 145px; }
+    .col-round { width: 78px; }
+    .col-hit { width: 145px; }
+    .col-token { width: 128px; }
+    .col-count { width: 84px; }
+    .col-result { width: 160px; }
+    .col-action { width: 92px; }
+    .mono {
+      font-family: var(--mono);
+      font-size: 12px;
+    }
+    .success { color: var(--green); }
+    .danger { color: var(--red); }
+    .accent { color: var(--blue); }
+    .detail-grid {
+      display: grid;
+      grid-template-columns: minmax(300px, .9fr) minmax(360px, 1.45fr);
+      gap: 16px;
+    }
+    .detail-list {
+      display: grid;
+      grid-template-columns: 128px minmax(0, 1fr);
+      gap: 8px 12px;
+      line-height: 1.45;
+    }
+    .detail-list span:nth-child(odd) { color: var(--muted); }
+    .rounds {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    .round {
+      min-width: 186px;
+      padding: 10px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #0d1422;
+    }
+    .round.hit {
+      border-color: rgba(240, 170, 43, .45);
+      background: rgba(240, 170, 43, .08);
+    }
+    .log-panel > summary {
+      min-height: 58px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 0 16px;
+      list-style: none;
+      cursor: pointer;
+      background: rgba(26, 36, 52, .8);
+    }
+    .log-panel > summary::-webkit-details-marker { display: none; }
+    .log-body { border-top: 1px solid var(--line); }
+    .log-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--line);
+      background: #121a29;
+    }
+    .log-wrap {
+      height: min(42vh, 520px);
+      min-height: 280px;
+      overflow: auto;
+      background: #0d1422;
+    }
+    .log-table { min-width: 1080px; }
+    .log-table td { background: #101827; font-family: var(--mono); font-size: 12px; }
+    .level-info { color: #8bd8ff; }
+    .level-warning { color: #ffd27a; }
+    .level-error { color: #ff9b92; }
+    .empty {
+      padding: 28px;
+      color: var(--muted);
+      text-align: center;
+      background: transparent !important;
+      border: 0 !important;
+    }
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+    @keyframes buttonPulse {
+      0% { box-shadow: 0 0 0 0 rgba(59, 150, 255, .42); }
+      100% { box-shadow: 0 0 0 10px rgba(59, 150, 255, 0); }
+    }
+    @keyframes statusBlink {
+      0%, 100% { transform: scale(1); opacity: .72; }
+      50% { transform: scale(1.35); opacity: 1; }
+    }
+    @keyframes statusPing {
+      0% { transform: scale(.65); opacity: .58; }
+      100% { transform: scale(1.9); opacity: 0; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      button.is-loading::before,
+      button.refresh-flash,
+      .chip.stream .dot,
+      .chip.stream .dot::after {
+        animation: none;
+      }
+    }
+    @media (max-width: 1180px) {
+      .metrics { grid-template-columns: repeat(3, minmax(160px, 1fr)); }
+    }
+    @media (max-width: 760px) {
+      .shell { width: min(100% - 18px, 1680px); padding-top: 10px; }
+      .topbar, .section-head, .log-head { align-items: flex-start; flex-direction: column; }
+      .brand { width: 100%; }
+      .toolbar, .filters { justify-content: flex-start; width: 100%; }
+      .metrics { grid-template-columns: 1fr; }
+      .detail-grid { grid-template-columns: 1fr; }
+      input { min-width: 0; width: 100%; }
+      h1 { font-size: 18px; }
+      .metric { min-height: 104px; }
+      .metric-value { font-size: 26px; }
+      table { min-width: 1180px; }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <div class="brand">
+        <div class="mark">C</div>
+        <div>
+          <h1>CodexCont 保护状态面板</h1>
+          <div class="subtitle" id="subtitle">正在读取运行状态</div>
+        </div>
+      </div>
+      <div class="toolbar">
+        <span class="chip stream warn" id="stream-pill"><span class="dot"></span><span id="stream-label">连接中</span></span>
+        <span class="chip info"><span class="dot"></span><span id="active-now">活跃 0</span></span>
+        <button id="refresh-btn" class="primary" type="button">刷新</button>
+      </div>
+    </header>
+
+    <section class="metrics">
+      <article class="metric">
+        <div class="metric-label"><span class="metric-icon">#</span>总请求</div>
+        <div class="metric-value" id="m-total">0</div>
+        <div class="metric-hint" id="m-last-request">-</div>
+      </article>
+      <article class="metric">
+        <div class="metric-label"><span class="metric-icon ok">P</span>进入保护链</div>
+        <div class="metric-value success" id="m-folded">0</div>
+        <div class="metric-hint">由 CodexCont 折叠处理</div>
+      </article>
+      <article class="metric">
+        <div class="metric-label"><span class="metric-icon teal">C</span>自动续写</div>
+        <div class="metric-value accent" id="m-cont">0</div>
+        <div class="metric-hint" id="m-last-cont">-</div>
+      </article>
+      <article class="metric">
+        <div class="metric-label"><span class="metric-icon warn">516</span>疑似截断</div>
+        <div class="metric-value" id="m-trunc">0</div>
+        <div class="metric-hint">516 / 518n-2 指纹</div>
+      </article>
+      <article class="metric">
+        <div class="metric-label"><span class="metric-icon bad">!</span>失败</div>
+        <div class="metric-value danger" id="m-fail">0</div>
+        <div class="metric-hint" id="m-last-error">-</div>
+      </article>
+    </section>
+
+    <section class="section">
+      <div class="section-head">
+        <div class="section-title">
+          <h2>最近请求</h2>
+          <p class="muted">保护结果、命中轮和末轮 reasoning 是主视图。</p>
+        </div>
+        <div class="filters">
+          <select id="protect-filter" title="按保护结果筛选">
+            <option value="">全部保护结果</option>
+            <option value="protected_clean">已保护 / 无需续写</option>
+            <option value="auto_continued">已自动续写</option>
+            <option value="risk_uncontinued">疑似截断 / 未续写</option>
+            <option value="passthrough">透传</option>
+            <option value="failed">失败</option>
+            <option value="incomplete">不完整</option>
+            <option value="processing">处理中</option>
+          </select>
+          <input id="request-filter" type="search" placeholder="筛选用户 / Key / 模型 / 请求 ID / 原因">
+          <span class="chip info"><span class="dot"></span><span id="request-cache">0 条</span></span>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th class="col-time">时间</th>
+              <th class="col-key">用户/Key</th>
+              <th class="col-protect">保护结果</th>
+              <th class="col-model">模型</th>
+              <th class="col-round">轮次</th>
+              <th class="col-hit">命中轮</th>
+              <th class="col-token">末轮思考量</th>
+              <th class="col-count">续写</th>
+              <th class="col-result">最终结果</th>
+              <th class="col-action">详情</th>
+            </tr>
+          </thead>
+          <tbody id="requests-body"><tr><td colspan="10" class="empty">暂无请求</td></tr></tbody>
+        </table>
+      </div>
+    </section>
+
+    <details class="section log-panel">
+      <summary>
+        <span>高级日志</span>
+        <span class="muted">原始脱敏事件</span>
+      </summary>
+      <div class="log-body">
+        <div class="log-head">
+          <div class="filters">
+            <select id="level-filter" title="按级别筛选">
+              <option value="">全部级别</option>
+              <option value="info">信息</option>
+              <option value="warning">警告</option>
+              <option value="error">错误</option>
+            </select>
+            <input id="text-filter" type="search" placeholder="筛选日志文本">
+          </div>
+          <div class="toolbar">
+            <button id="pause-btn" type="button">暂停日志</button>
+            <button id="autoscroll-btn" class="active" type="button">自动滚动</button>
+            <button id="clear-btn" type="button">清空本地</button>
+          </div>
+        </div>
+        <div class="log-wrap" id="log-wrap">
+          <table class="log-table">
+            <thead>
+              <tr>
+                <th class="col-time">时间</th>
+                <th class="col-count">级别</th>
+                <th class="col-protect">事件</th>
+                <th class="col-model">请求</th>
+                <th>字段</th>
+              </tr>
+            </thead>
+            <tbody id="logs-body"><tr><td colspan="5" class="empty">暂无日志</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </details>
+  </main>
+
+  <script>
+    const state = {
+      logs: [],
+      requests: new Map(),
+      expanded: new Set(),
+      pausedLogs: false,
+      autoscroll: true,
+      source: null,
+      statusSeq: 0,
+      requestsSeq: 0,
+      logsSeq: 0,
+      refreshing: false,
+      lastRefreshAt: 0,
+    };
+    const $ = (id) => document.getElementById(id);
+    const PROTECTION = {
+      protected_clean: ["已保护 / 无需续写", "ok", "经过保护链，未命中 516/518n-2"],
+      auto_continued: ["已自动续写", "live", "检测到 516/518n-2，已打开隐藏续写轮"],
+      risk_uncontinued: ["疑似截断 / 未续写", "warn", "检测到截断指纹，但保护条件未满足"],
+      passthrough: ["透传", "neutral", "未进入折叠保护链"],
+      failed: ["失败", "bad", "请求或上游处理失败"],
+      incomplete: ["不完整", "warn", "上游未完整结束"],
+      processing: ["处理中", "info", "请求仍在处理中"],
+    };
+    const DECISIONS = {
+      continue: "自动续写",
+      clean: "正常结束",
+      upstream_eof: "上游提前断开",
+      no_encrypted_content: "缺少可回放思维",
+      max_continue: "达到续写上限",
+      max_total_output_tokens: "达到输出上限",
+      tier_out_of_window: "不在续写窗口",
+    };
+    const EVENTS = {
+      request_started: "收到请求",
+      fold_start: "进入保护链",
+      passthrough: "透传",
+      round_decision: "轮次判断",
+      continuation_opened: "自动续写",
+      request_finished: "请求完成",
+      request_failed: "请求失败",
+      manual_event: "手动事件",
+    };
+    function esc(value) {
+      return String(value == null ? "" : value).replace(/[&<>"']/g, ch => ({
+        "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+      }[ch]));
+    }
+    function fmtTime(value) {
+      if (!value) return "-";
+      const d = new Date(value);
+      return Number.isNaN(d.getTime()) ? value : d.toLocaleString("zh-CN", { hour12: false });
+    }
+    function fmtDuration(seconds) {
+      seconds = Number(seconds || 0);
+      const h = Math.floor(seconds / 3600);
+      const m = Math.floor((seconds % 3600) / 60);
+      const s = Math.floor(seconds % 60);
+      return h ? `${h}时 ${m}分 ${s}秒` : m ? `${m}分 ${s}秒` : `${s}秒`;
+    }
+    function fmtMs(ms) {
+      if (ms == null) return "-";
+      if (ms < 1000) return `${ms} ms`;
+      return `${(ms / 1000).toFixed(1)} 秒`;
+    }
+    function setText(id, value) {
+      $(id).textContent = value == null || value === "" ? "-" : String(value);
+    }
+    function setStream(kind, text) {
+      const el = $("stream-pill");
+      el.className = `chip stream ${kind}`;
+      setText("stream-label", text);
+    }
+    function setRefreshBusy(busy) {
+      const button = $("refresh-btn");
+      button.classList.toggle("is-loading", busy);
+      button.setAttribute("aria-busy", busy ? "true" : "false");
+      button.textContent = busy ? "刷新中" : "刷新";
+      if (!busy) {
+        button.classList.remove("refresh-flash");
+        void button.offsetWidth;
+        button.classList.add("refresh-flash");
+      }
+    }
+    function cacheBust(path) {
+      const joiner = path.includes("?") ? "&" : "?";
+      return `${path}${joiner}_=${Date.now()}`;
+    }
+    async function fetchFresh(path, options = {}) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), options.timeoutMs || 15000);
+      try {
+        return await fetch(cacheBust(path), {
+          cache: "no-store",
+          signal: controller.signal,
+          ...options,
+        });
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+    function chip(kind) {
+      const [label, cls, title] = PROTECTION[kind] || PROTECTION.processing;
+      return `<span class="chip ${cls}" title="${esc(title)}"><span class="dot"></span><span>${esc(label)}</span></span>`;
+    }
+    function summarizeFields(fields) {
+      if (!fields || typeof fields !== "object") return "";
+      return Object.entries(fields)
+        .filter(([, v]) => v !== null && v !== undefined && v !== "")
+        .map(([k, v]) => `${k}=${typeof v === "object" ? JSON.stringify(v) : v}`)
+        .join(" ");
+    }
+    function requestSearchText(req) {
+      return JSON.stringify({
+        id: req.request_id,
+        model: req.model,
+        protection: req.protection,
+        status: req.status,
+        key: req.key_identity,
+        truncation_round: req.first_truncation_round,
+        truncation_tokens: req.first_truncation_reasoning_tokens,
+        stopped: req.stopped_reason,
+        fail: req.failure_reason,
+        passthrough: req.passthrough_reason,
+      }).toLowerCase();
+    }
+    function requestReason(req) {
+      if (req.failure_reason) return req.failure_reason;
+      if (req.stopped_reason) return DECISIONS[req.stopped_reason] || req.stopped_reason;
+      if (req.passthrough_reason) return req.passthrough_reason;
+      return "-";
+    }
+    function keyIdentityText(req) {
+      const key = req.key_identity || {};
+      return {
+        name: key.name || (key.known ? "已识别 Key" : "未识别 Key"),
+        preview: key.preview || key.id || "-",
+        enabled: key.enabled,
+        known: !!key.known,
+        source: key.source || "-",
+      };
+    }
+    function requestTrigger(req) {
+      if (!req.first_truncation_round) return "-";
+      const tokens = req.first_truncation_reasoning_tokens ?? "-";
+      return `第 ${req.first_truncation_round} 轮 / ${tokens}`;
+    }
+    function requestTriggerHint(req) {
+      if (!req.first_truncation_round) return "未命中 516/518n-2";
+      const decision = DECISIONS[req.first_truncation_decision] || req.first_truncation_decision || "-";
+      return `决策：${decision}`;
+    }
+    function renderRounds(rounds) {
+      if (!Array.isArray(rounds) || !rounds.length) return '<span class="muted">暂无轮次数据</span>';
+      return rounds.map((round) => {
+        const decision = DECISIONS[round.decision] || round.decision || "-";
+        const cls = round.truncation_match ? "round hit" : "round";
+        return `<div class="${cls}">
+          <h3>第 ${esc(round.round)} 轮</h3>
+          <div>Reasoning: <span class="mono">${esc(round.reasoning_tokens ?? "-")}</span></div>
+          <div>516 指纹: ${esc(round.truncation_match ? "命中" : "未命中")}</div>
+          <div>决策: ${esc(decision)}</div>
+        </div>`;
+      }).join("");
+    }
+    function renderRequests() {
+      const tbody = $("requests-body");
+      const protect = $("protect-filter").value;
+      const text = $("request-filter").value.trim().toLowerCase();
+      const requests = Array.from(state.requests.values())
+        .sort((a, b) => Date.parse(b.started_at || 0) - Date.parse(a.started_at || 0))
+        .filter((req) => (!protect || req.protection === protect) && (!text || requestSearchText(req).includes(text)))
+        .slice(0, 100);
+      setText("request-cache", `${state.requests.size} 条`);
+      if (!requests.length) {
+        tbody.innerHTML = '<tr><td colspan="10" class="empty">暂无匹配请求</td></tr>';
+        return;
+      }
+      tbody.innerHTML = requests.map((req) => {
+        const id = req.request_id || "";
+        const open = state.expanded.has(id);
+        const rounds = Array.isArray(req.rounds) ? req.rounds : [];
+        const reason = requestReason(req);
+        const result = req.status === "processing" ? "处理中" : req.final_status || req.status || "-";
+        const key = keyIdentityText(req);
+        return `<tr class="data-row">
+          <td><div>${esc(fmtTime(req.started_at))}</div><div class="muted mono">${esc(id)}</div></td>
+          <td><div>${esc(key.name)}</div><div class="muted mono">${esc(key.preview)}</div></td>
+          <td>${chip(req.protection)}<div class="muted">${esc(PROTECTION[req.protection]?.[2] || "")}</div></td>
+          <td class="mono">${esc(req.model || "-")}</td>
+          <td>${esc(req.latest_round || rounds.length || 0)}</td>
+          <td><span class="mono">${esc(requestTrigger(req))}</span><div class="muted">${esc(requestTriggerHint(req))}</div></td>
+          <td><span class="mono accent">${esc(req.latest_reasoning_tokens ?? "-")}</span></td>
+          <td>${esc(req.continuation_count || 0)}</td>
+          <td>${esc(result)}<div class="muted">${esc(reason)}</div></td>
+          <td><button type="button" data-toggle-request="${esc(id)}">${open ? "收起" : "展开"}</button></td>
+        </tr>
+        <tr class="detail-row" ${open ? "" : "hidden"}>
+          <td colspan="10">
+            <div class="detail-grid">
+              <div class="detail-list">
+                <span>请求 ID</span><strong class="mono">${esc(id)}</strong>
+                <span>用户/Key</span><strong>${esc(key.name)} / ${esc(key.preview)}</strong>
+                <span>身份来源</span><strong>${esc(key.source)}${key.enabled === false ? " / 已停用" : ""}</strong>
+                <span>路径</span><strong>${esc(req.path || "-")}</strong>
+                <span>耗时</span><strong>${esc(fmtMs(req.duration_ms))}</strong>
+                <span>结束时间</span><strong>${esc(fmtTime(req.ended_at))}</strong>
+                <span>516 命中轮</span><strong>${esc(requestTrigger(req))}</strong>
+                <span>命中后决策</span><strong>${esc(requestTriggerHint(req))}</strong>
+                <span>透传原因</span><strong>${esc(req.passthrough_reason || "-")}</strong>
+                <span>失败原因</span><strong>${esc(req.failure_reason || "-")}</strong>
+              </div>
+              <div>
+                <h3 style="margin-bottom:8px;">思维链保护判断</h3>
+                <div class="rounds">${renderRounds(rounds)}</div>
+              </div>
+            </div>
+          </td>
+        </tr>`;
+      }).join("");
+      tbody.querySelectorAll("[data-toggle-request]").forEach((button) => {
+        button.onclick = () => {
+          const id = button.getAttribute("data-toggle-request");
+          if (state.expanded.has(id)) state.expanded.delete(id);
+          else state.expanded.add(id);
+          renderRequests();
+        };
+      });
+    }
+    function renderLogs() {
+      const tbody = $("logs-body");
+      const level = $("level-filter").value;
+      const text = $("text-filter").value.trim().toLowerCase();
+      const logs = state.logs.filter((ev) => {
+        if (level && ev.level !== level) return false;
+        if (!text) return true;
+        return JSON.stringify(ev).toLowerCase().includes(text);
+      }).slice(-600);
+      if (!logs.length) {
+        tbody.innerHTML = '<tr><td colspan="5" class="empty">暂无匹配日志</td></tr>';
+        return;
+      }
+      tbody.innerHTML = logs.map((ev) => {
+        const fields = ev.fields || {};
+        const details = [ev.message, summarizeFields(fields)].filter(Boolean).join(" | ");
+        const label = EVENTS[ev.event] || ev.event || "";
+        const levelClass = `level-${ev.level || "info"}`;
+        return `<tr>
+          <td>${esc(fmtTime(ev.ts))}</td>
+          <td class="${levelClass}">${esc(ev.level || "")}</td>
+          <td>${esc(label)}</td>
+          <td class="mono">${esc(fields.request_id || "")}</td>
+          <td>${esc(details)}</td>
+        </tr>`;
+      }).join("");
+      if (state.autoscroll) $("log-wrap").scrollTop = $("log-wrap").scrollHeight;
+    }
+    function hasProcessingRequest() {
+      return Array.from(state.requests.values()).some((req) => (
+        req.status === "processing" || req.protection === "processing" || !req.ended_at
+      ));
+    }
+    function scheduleRequestFollowUp(req) {
+      refreshStatus().catch(() => {});
+      if (req && (req.status === "processing" || req.protection === "processing" || !req.ended_at)) {
+        setTimeout(() => loadRequests().catch(() => {}), 1500);
+        setTimeout(() => loadRequests().catch(() => {}), 4500);
+      }
+    }
+    async function refreshStatus() {
+      const seq = ++state.statusSeq;
+      try {
+        const res = await fetchFresh("status");
+        const data = await res.json();
+        if (seq !== state.statusSeq) return;
+        const counters = data.counters || {};
+        setText("subtitle", `上游 ${data.upstream?.ok === true ? "正常" : "未知"} / ${data.config?.upstream_host || "-"}`);
+        setText("m-total", counters.total_requests || 0);
+        setText("m-folded", counters.folded_requests || 0);
+        setText("m-cont", counters.continuations || 0);
+        setText("m-trunc", counters.truncation_hits || 0);
+        setText("m-fail", counters.failures || 0);
+        setText("active-now", `活跃 ${counters.active_requests || 0}`);
+        setText("m-last-request", data.last_request_at ? `最近 ${fmtTime(data.last_request_at)}` : `运行 ${fmtDuration(data.uptime_seconds)}`);
+        setText("m-last-cont", data.last_continuation_at ? `最近 ${fmtTime(data.last_continuation_at)}` : "-");
+        setText("m-last-error", data.last_error_at ? `最近 ${fmtTime(data.last_error_at)}` : "-");
+        state.lastRefreshAt = Date.now();
+      } catch (err) {
+        setText("subtitle", `状态刷新失败：${err.name || err}`);
+      }
+    }
+    async function loadRequests() {
+      const seq = ++state.requestsSeq;
+      try {
+        const res = await fetchFresh("requests?limit=100");
+        const data = await res.json();
+        if (seq !== state.requestsSeq) return;
+        state.requests = new Map((data.requests || []).map((req) => [req.request_id, req]));
+        renderRequests();
+        state.lastRefreshAt = Date.now();
+        if (hasProcessingRequest()) {
+          setTimeout(() => loadRequests().catch(() => {}), 2500);
+        }
+      } catch (_) {}
+    }
+    async function loadInitialLogs() {
+      const seq = ++state.logsSeq;
+      try {
+        const res = await fetchFresh("logs?limit=200");
+        const data = await res.json();
+        if (seq !== state.logsSeq) return;
+        state.logs = data.events || [];
+        renderLogs();
+      } catch (_) {}
+    }
+    function connectStream(options = {}) {
+      if (state.source && !options.force) return;
+      if (state.source) state.source.close();
+      const source = new EventSource("logs/stream");
+      state.source = source;
+      setStream("warn", "连接中");
+      source.addEventListener("ready", () => {
+        if (state.source !== source) return;
+        setStream("live", "实时已连接");
+      });
+      source.onopen = () => {
+        if (state.source !== source) return;
+        setStream("warn", "实时连接中");
+      };
+      source.addEventListener("request", (ev) => {
+        if (state.source !== source) return;
+        try {
+          const req = JSON.parse(ev.data);
+          state.requests.set(req.request_id, req);
+          renderRequests();
+          scheduleRequestFollowUp(req);
+        } catch (_) {}
+      });
+      source.addEventListener("log", (ev) => {
+        if (state.source !== source) return;
+        if (state.pausedLogs) return;
+        try {
+          state.logs.push(JSON.parse(ev.data));
+          if (state.logs.length > 800) state.logs.splice(0, state.logs.length - 800);
+          renderLogs();
+        } catch (_) {}
+      });
+      source.onerror = () => {
+        if (state.source !== source) return;
+        setStream("bad", "连接中断");
+      };
+    }
+    async function manualRefresh() {
+      if (state.refreshing) return;
+      state.refreshing = true;
+      setRefreshBusy(true);
+      try {
+        await Promise.all([refreshStatus(), loadRequests(), loadInitialLogs()]);
+        connectStream({ force: true });
+      } finally {
+        state.refreshing = false;
+        setRefreshBusy(false);
+      }
+    }
+    function reviveDashboard() {
+      connectStream({ force: true });
+      Promise.all([refreshStatus(), loadRequests(), loadInitialLogs()]).catch(() => {});
+    }
+    $("refresh-btn").onclick = () => { manualRefresh().catch(() => {}); };
+    $("pause-btn").onclick = () => {
+      state.pausedLogs = !state.pausedLogs;
+      $("pause-btn").textContent = state.pausedLogs ? "继续日志" : "暂停日志";
+      $("pause-btn").classList.toggle("active", state.pausedLogs);
+    };
+    $("autoscroll-btn").onclick = () => {
+      state.autoscroll = !state.autoscroll;
+      $("autoscroll-btn").classList.toggle("active", state.autoscroll);
+    };
+    $("clear-btn").onclick = () => { state.logs = []; renderLogs(); };
+    $("level-filter").onchange = renderLogs;
+    $("text-filter").oninput = renderLogs;
+    $("protect-filter").onchange = renderRequests;
+    $("request-filter").oninput = renderRequests;
+    loadRequests();
+    loadInitialLogs();
+    refreshStatus();
+    connectStream();
+    document.addEventListener("visibilitychange", () => {
+      if (!document.hidden) reviveDashboard();
+    });
+    window.addEventListener("pageshow", reviveDashboard);
+    window.addEventListener("focus", () => {
+      if (Date.now() - state.lastRefreshAt > 60000) reviveDashboard();
+    });
+    setInterval(refreshStatus, 5000);
+    setInterval(loadRequests, 5000);
+  </script>
+</body>
+</html>

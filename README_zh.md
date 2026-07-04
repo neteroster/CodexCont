@@ -105,6 +105,119 @@ chatgpt_account_id = ""            # 非空时作为 chatgpt-account-id 发送
 
 不要提交密钥。`.gitignore` 已忽略 `rt.json` 和 `free_rt.json`；如果把 token 写入 `config.toml`，也请谨慎管理。
 
+## 状态面板
+
+CodexCont 内置一个只读状态面板：
+
+```text
+http://127.0.0.1:8787/admin/
+```
+
+它可以查看服务状态、上游健康、内存中的请求指标，以及通过 SSE 实时推送的脱敏日志。当前面板优先展示“最近请求”的中文保护结果，能直接区分：
+
+- `已保护 / 无需续写`：请求进入 CodexCont 保护链，未命中 516/518n-2 指纹。
+- `已自动续写`：检测到 516/518n-2，并已打开隐藏续写轮。
+- `疑似截断 / 未续写`：检测到截断指纹，但保护条件或上限阻止了续写。
+- `透传` / `失败` / `不完整`：分别表示未进入折叠保护、请求失败、上游未完整结束。
+
+面板里的“末轮思考量”只表示最后一轮上游响应的 reasoning token；如果某个请求被自动续写，真正触发续写的 516/518n-2 会显示在“命中轮”列里。
+
+日志和最近请求都只保存在进程内存中，默认日志上限为：
+
+```toml
+[admin]
+max_log_events = 800
+key_policy_state_path = "" # 可选：填 CPA Key Policy state JSON 路径后显示安全的 Key 名称
+```
+
+Docker 部署时这里必须填容器内部可读到的路径。例如把 CPA plugin state
+只读挂载到容器内，然后设置
+`key_policy_state_path = "/data/plugin-state/cpa-key-policy-state.json"`。
+
+不要把 `/admin/` 直接暴露在公网 API 域名上；生产环境应放在 Cloudflare Access 这类外层访问控制之后。
+
+## CPA 用量自助页
+
+本仓库还包含一个独立的 CPA 用量自助页 sidecar：
+
+```bash
+.venv/Scripts/python.exe run_usage_portal.py
+```
+
+它不是 CPA fork，也不是 CPAMP 的替代品。推荐生产链路是：
+
+```text
+CPA Key Policy 负责 key 和限额
+CPAMP 负责请求级用量采集
+cpa_usage_portal 只给普通用户看自己的用量
+```
+
+关键环境变量：
+
+```text
+CPA_USAGE_PORTAL_KEY_POLICY_STATE=/data/cpa-key-policy-state.json
+CPA_USAGE_PORTAL_CPAMP_URL=http://cpamp:18317
+CPA_USAGE_PORTAL_CPAMP_ADMIN_KEY_FILE=/run/secrets/cpamp_admin_key
+CPA_USAGE_PORTAL_SESSION_SECRET_FILE=/run/secrets/session_secret
+```
+
+用户只在登录时提交自己的 `cpa_...` API Key。服务端会用 `sha256` 校验 Key Policy state，并在 HttpOnly cookie 中只保存用于会话校验的哈希和安全元数据；页面和接口不会返回原始 key、完整 key hash、OAuth token、CPA/CPAMP 管理密钥、请求正文、响应正文或 encrypted reasoning 内容。
+
+Docker 部署模板在：
+
+```text
+deploy/cpa-usage-portal/
+```
+
+## CPAMP 与 Key Policy 配合
+
+计划中的生产组合是：
+
+- CPAMP：管理员面板和请求级监控，放在 `cpa-admin.konbakuyomu.us` + Cloudflare Access 后面。
+- CPA Key Policy：生成 `cpa_...` key，配置每个 key 的模型权限、RPM、每日/每周 USD 限额。
+- CPA 用量自助页：普通用户用自己的 key 登录，只能看自己的用量和最近请求。
+
+Key Policy 有两个容易混淆的标识：
+
+- `key_hash`：原始 `cpa_...` key 的 `sha256:<hex>`，只用于登录校验。
+- `id`：Key Policy 交给 CPA 的 Principal；CPAMP monitoring 里的 `api_key_hash` 实际是 `sha256(id)`。
+
+因此门户登录时用原始 key hash 找到 Key Policy 记录，查询 CPAMP 时改用该记录 `id` 的 hash。所有 CPAMP 查询都会强制带当前登录 key 对应的 `api_key_hash` 过滤。
+
+### Key 体系
+
+生产上推荐把普通用户统一迁移到 Key Policy 生成的 `cpa_...` key：
+
+```text
+Codex Base URL: https://cpa.konbakuyomu.us/v1
+Codex API Key:  cpa_...
+用量自助页:     https://cpa-usage.konbakuyomu.us/
+```
+
+CPA 原生 `api-keys` 里的 `sk...` key 只建议保留为管理员兼容/救急入口，不作为普通用户分发体系。它不天然带 Key Policy 的用户身份、模型 allowlist、RPM、每日/每周限额，也不作为用量自助页的登录凭据。
+
+管理面板也有两类密钥：
+
+- CPAMP 管理面板登录使用 CPAMP admin key。
+- CPA 原生 management API 使用 CPA management key。
+
+当前 `https://cpa-admin.konbakuyomu.us/management.html` 指向 CPAMP，所以登录它需要 CPAMP admin key，而不是 CPA management key。
+
+### 维护边界
+
+CPA、CPAMP、CPA Key Policy 都保持官方来源，不在本仓库二开：
+
+- CPA：官方镜像 `eceasy/cli-proxy-api:latest`。
+- CPAMP：官方镜像 `seakee/cpa-manager-plus:latest`。
+- CPA Key Policy：官方 release 的 `cpa-key-policy.so`，挂载到 CPA 插件目录。
+
+本仓库自定义维护的只有：
+
+- `CodexCont`：负责 516/518n-2 续写保护。
+- `cpa_usage_portal`：普通用户用量自助页。
+
+服务器上它们是独立 stack / 独立容器，后续可以分别更新 CPA、CPAMP、Key Policy、CodexCont 和用户自助页。
+
 ## 什么时候会执行续写折叠
 
 只有同时满足以下条件时，中间件才会执行折叠逻辑：
@@ -161,25 +274,40 @@ uv run python tests/test_middleware.py
 - header 透明转发
 - 上游 URL 解析
 - 鉴权安全保护
+- dashboard diagnostics 和 admin route smoke
+- CPA 用量自助页的 key hash/session/过滤/脱敏/retention 行为
 - EOF / 上游错误处理
 
 ## 项目结构
 
 ```text
 middleware/
+  admin.py     # 只读状态面板 / admin 路由
   app.py       # Starlette 应用和路由处理
   codex.py     # 截断数学和续写 payload 构造
   config.py    # config.toml 加载和 dataclass 配置
   creds.py     # 上游 header / auth 构造
+  dashboard.html # 静态状态面板页面
+  diagnostics.py # 内存指标、环形日志和 SSE 订阅
   proxy.py     # fold_stream 状态机
   sse.py       # 增量 SSE 解析和序列化
   store.py     # 可选 stateful repair 使用的内存 ID 存储
 
+cpa_usage_portal/
+  app.py       # 用户用量自助页 Starlette 应用
+  key_policy.py # CPA Key Policy state 只读解析
+  cpamp.py     # CPAMP monitoring API client
+  redaction.py # 用户可见事件脱敏投影
+  retention.py # CPAMP SQLite 7 天保留辅助
+  static/dashboard.html # 中文自助页
+
 tests/
   test_middleware.py
+  test_cpa_usage_portal.py
   fixtures/
 
 run.py         # uvicorn 入口
+run_usage_portal.py # CPA 用量自助页入口
 config.example.toml # 示例运行配置；复制为 config.toml 后本地使用
 ```
 

@@ -1,0 +1,2 @@
+{"file": ".trellis/spec/backend/codex-continuation-contracts.md", "reason": "Validate continuation metadata, secret logging, and production CPA route invariants."}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Validate status/log event contracts from backend to frontend."}
