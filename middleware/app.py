@@ -83,6 +83,60 @@ def _api_root(listen_path: str) -> str:
     return listen_path.rsplit("/", 1)[0] if "/" in listen_path else ""
 
 
+def _dedupe_tool_namespaces(body: dict[str, Any]) -> int:
+    """Collapse duplicate tool namespace names within one request.
+
+    The agent can re-declare a namespace inside a `tool_search_output` item
+    while the same namespace is already present in the top-level `tools` list.
+    Strict Responses-API implementations (e.g. DeepSeek) reject that body with
+    HTTP 400 "Duplicate namespace name ... Namespace names must be unique"
+    instead of accepting it. Keep the first declaration and fold the later
+    one's tools into it, so no tool definition is lost.
+    """
+    kept: dict[str, dict[str, Any]] = {}
+    dropped = 0
+
+    def normalize(container: dict[str, Any]) -> None:
+        nonlocal dropped
+        tools = container.get("tools")
+        if not isinstance(tools, list):
+            return
+        out: list[Any] = []
+        for entry in tools:
+            if not (isinstance(entry, dict) and entry.get("type") == "namespace"):
+                out.append(entry)
+                continue
+            name = entry.get("name")
+            if not isinstance(name, str):
+                out.append(entry)
+                continue
+            first = kept.get(name)
+            if first is None:
+                kept[name] = entry
+                out.append(entry)
+                continue
+            target = first.get("tools")
+            if not isinstance(target, list):
+                target = []
+                first["tools"] = target
+            inner = entry.get("tools")
+            names = {tool.get("name") for tool in target if isinstance(tool, dict)}
+            for tool in inner if isinstance(inner, list) else []:
+                if isinstance(tool, dict) and tool.get("name") not in names:
+                    target.append(tool)
+                    names.add(tool.get("name"))
+            dropped += 1
+        container["tools"] = out
+
+    normalize(body)
+    input_items = body.get("input")
+    if isinstance(input_items, list):
+        for item in input_items:
+            if isinstance(item, dict):
+                normalize(item)
+    return dropped
+
+
 def _resolve_passthrough_url(cfg: Config, request: Request) -> str | None:
     """Map an arbitrary incoming request to its upstream equivalent for transparent
     passthrough (everything that is NOT a fold endpoint, e.g. GET /v1/models).
@@ -174,6 +228,10 @@ async def handle_responses(request: Request) -> Response:
                       "credentials to an externally supplied URL."},
             status_code=400,
         )
+
+    dropped_namespaces = _dedupe_tool_namespaces(body)
+    if dropped_namespaces:
+        log.info("dropped duplicate tool namespaces: count=%d", dropped_namespaces)
 
     # Fold only a streaming, reasoning-enabled request that isn't a collision.
     # Everything else (non-reasoning, non-streaming, continuation disabled, or

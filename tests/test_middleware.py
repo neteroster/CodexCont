@@ -18,7 +18,12 @@ sys.path.insert(0, str(ROOT))
 
 from starlette.datastructures import Headers
 
-from middleware.app import _make_client, _resolve_upstream_url, _url_is_from_header
+from middleware.app import (
+    _dedupe_tool_namespaces,
+    _make_client,
+    _resolve_upstream_url,
+    _url_is_from_header,
+)
 from middleware.codex import (
     continue_call_id,
     is_truncation_pattern,
@@ -715,6 +720,45 @@ def test_reasoning_gate():
 # --- 3-fix. stateful follow-up repair (#3) ----------------------------------
 
 
+def test_dedupe_tool_namespaces():
+    def ns(name, tool_names):
+        return {
+            "type": "namespace",
+            "name": name,
+            "description": f"Tools provided by {name}.",
+            "tools": [{"type": "function", "name": n} for n in tool_names],
+        }
+
+    body = {
+        "tools": [ns("codex_app", ["read_thread"])],
+        "input": [
+            {"type": "message", "role": "user", "content": []},
+            {
+                "type": "tool_search_output",
+                "call_id": "call_x",
+                "status": "completed",
+                "execution": "client",
+                "tools": [ns("codex_app", ["read_thread", "send_message_to_thread"])],
+            },
+        ],
+    }
+
+    check("duplicate namespace dropped", _dedupe_tool_namespaces(body) == 1)
+    check("duplicate namespace removed from input item", body["input"][1]["tools"] == [])
+    check("kept namespace keeps first tools",
+          [t["name"] for t in body["tools"][0]["tools"]]
+          == ["read_thread", "send_message_to_thread"])
+
+
+def test_dedupe_tool_namespaces_noop():
+    body = {
+        "tools": [{"type": "function", "name": "exec_command"}],
+        "input": [{"type": "message", "role": "user", "content": []}],
+    }
+    check("no duplicates → untouched", _dedupe_tool_namespaces(body) == 0)
+    check("non-namespace tools kept", len(body["tools"]) == 1)
+
+
 def test_stateful_repair():
     store = IdStore()
     store.add("rs_keep")
@@ -807,6 +851,8 @@ async def _main():
     test_auth_safety_guard()
     test_auth_injection()
     test_reasoning_gate()
+    test_dedupe_tool_namespaces()
+    test_dedupe_tool_namespaces_noop()
     test_stateful_repair()
     await test_eof_incomplete()
 
