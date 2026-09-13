@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Any, AsyncIterator, Iterator
 
@@ -39,6 +40,9 @@ log = logging.getLogger("middleware.proxy")
 
 _TERMINAL = ("response.completed", "response.failed", "response.incomplete")
 _USAGE_TOP = ("input_tokens", "output_tokens", "total_tokens")
+_SECRET_IN_ERROR = re.compile(
+    r"(?i)(?:bearer\s+|sk-)[A-Za-z0-9._~+/=-]{8,}"
+)
 
 
 async def open_round(
@@ -253,6 +257,21 @@ def _with_proxy_metadata(
     resp["metadata"] = md
 
 
+def _log_failed_error(terminal: dict[str, Any] | None) -> None:
+    if (terminal or {}).get("type") != "response.failed":
+        return
+    response = (terminal or {}).get("response") or {}
+    error = response.get("error")
+    if not isinstance(error, dict):
+        log.warning("upstream response.failed: response_id=%s error=%r",
+                    response.get("id"), error)
+        return
+    message = str(error.get("message") or "")
+    message = _SECRET_IN_ERROR.sub("[REDACTED]", message)[:1000]
+    log.warning("upstream response.failed: response_id=%s type=%s code=%s message=%s",
+                response.get("id"), error.get("type"), error.get("code"), message)
+
+
 def _reconstruct_terminal(
     terminal: dict[str, Any] | None,
     base_response: dict[str, Any] | None,
@@ -273,6 +292,8 @@ def _reconstruct_terminal(
     if usage:
         resp["usage"] = usage
     resp["status"] = tresp.get("status", "completed")
+    if "error" in tresp:
+        resp["error"] = tresp["error"]
     if "incomplete_details" in tresp:
         resp["incomplete_details"] = tresp["incomplete_details"]
     _with_proxy_metadata(resp, rounds, stopped_reason, billed_usage)
@@ -375,6 +396,7 @@ async def fold_stream(
 
                 if t in _TERMINAL:
                     terminal = ev
+                    _log_failed_error(terminal)
                     usage = (ev.get("response") or {}).get("usage")
                     break
 

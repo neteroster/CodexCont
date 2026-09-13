@@ -12,13 +12,23 @@ import sys
 from dataclasses import replace
 from pathlib import Path
 
+import zstandard as zstd
+
 ROOT = Path(__file__).resolve().parent.parent
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 sys.path.insert(0, str(ROOT))
 
 from starlette.datastructures import Headers
 
-from middleware.app import _make_client, _resolve_upstream_url, _url_is_from_header
+from middleware.app import (
+    _decode_request_body,
+    _drop_header,
+    _make_client,
+    _repair_legacy_tool_search_arguments,
+    _resolve_upstream_url,
+    _url_is_from_header,
+)
+from middleware.app import _canonicalize_function_call_outputs
 from middleware.codex import (
     continue_call_id,
     is_truncation_pattern,
@@ -712,6 +722,54 @@ def test_reasoning_gate():
     check("reasoning_enabled explicit false → false", not reasoning_enabled({"reasoning": False}))
 
 
+# --- 4b-fix. legacy tool-search replay repair --------------------------------
+
+
+def test_legacy_tool_search_argument_repair():
+    body = {
+        "input": [
+            {
+                "type": "function_call",
+                "name": "shell_command",
+                "arguments": "{\"command\":\"pwd\"}",
+            },
+            {
+                "type": "tool_search_call",
+                "call_id": "call_old",
+                "arguments": "{\"query\":\"read_thread\",\"limit\":5}",
+            },
+            {
+                "type": "tool_search_call",
+                "call_id": "call_new",
+                "arguments": {"query": "already new", "limit": 10},
+            },
+        ]
+    }
+    repaired, count = _repair_legacy_tool_search_arguments(body)
+    items = repaired["input"]
+    check("legacy tool_search repair count", count == 1, str(count))
+    check("legacy tool_search args now object", isinstance(items[1]["arguments"], dict))
+    check("legacy tool_search parsed limit", items[1]["arguments"].get("limit") == 5)
+    check("function_call args remain string", isinstance(items[0]["arguments"], str))
+    check("already-object tool_search unchanged", items[2]["arguments"]["limit"] == 10)
+    check("repair does not mutate original", isinstance(body["input"][1]["arguments"], str))
+
+
+def test_zstd_request_body_decode():
+    raw = json.dumps({"model": "gpt-5.6-sol", "input": ["fixture"]}).encode()
+    compressed = zstd.ZstdCompressor().compress(raw)
+    decoded, was_decoded = _decode_request_body(compressed, "zstd")
+    check("zstd request body decoded", decoded == raw)
+    check("zstd request body marked decoded", was_decoded)
+
+    identity, identity_decoded = _decode_request_body(raw, None)
+    check("identity request body unchanged", identity == raw and not identity_decoded)
+
+    headers = {"Content-Encoding": "zstd", "Content-Type": "application/json"}
+    _drop_header(headers, "content-encoding")
+    check("decoded request drops content-encoding", "Content-Encoding" not in headers)
+
+
 # --- 3-fix. stateful follow-up repair (#3) ----------------------------------
 
 
@@ -787,7 +845,84 @@ async def test_eof_incomplete():
           str([it.get("type") for it in out_items]))
 
 
+# --- 8-fix. failed terminal preserves upstream error -------------------------
+
+
+async def test_failed_error_preserved():
+    cfg = load_config(ROOT / "config.toml")
+    base_body = {"model": "gpt-5.5", "input": [{"role": "user", "content": "q"}]}
+    upstream_error = {
+        "type": "server_error",
+        "code": "upstream_overloaded",
+        "message": "The upstream service is temporarily overloaded.",
+    }
+    events = [
+        {"type": "response.created", "response": {
+            "id": "resp_f", "status": "in_progress", "error": None,
+        }},
+        {"type": "response.in_progress", "response": {"id": "resp_f"}},
+        {"type": "response.failed", "response": {
+            "id": "resp_f", "status": "failed", "error": upstream_error,
+        }},
+    ]
+    evs = [e for e in await run_fold(cfg, base_body, FakeResp(make_sse(events)), [])
+           if isinstance(e, dict)]
+    term = evs[-1]
+    response = term.get("response") or {}
+    check("failed terminal type preserved", term.get("type") == "response.failed",
+          str(term.get("type")))
+    check("failed status preserved", response.get("status") == "failed",
+          str(response.get("status")))
+    check("failed error preserved", response.get("error") == upstream_error,
+          str(response.get("error")))
+
+
 # --- runner -----------------------------------------------------------------
+
+
+def test_function_call_output_order_repair():
+    body = {
+        "input": [
+            {"type": "function_call", "call_id": "call_a"},
+            {"type": "function_call", "call_id": "call_b"},
+            {"type": "function_call", "call_id": "call_c"},
+            {"type": "function_call_output", "call_id": "call_a"},
+            {"type": "message", "role": "developer", "content": "notice"},
+            {"type": "function_call_output", "call_id": "call_b"},
+            {"type": "function_call_output", "call_id": "call_c"},
+        ]
+    }
+    repaired, count = _canonicalize_function_call_outputs(body)
+    items = repaired["input"]
+    order = [(item.get("type"), item.get("call_id")) for item in items]
+    check("tool output order repair count", count == 3, str(count))
+    check(
+        "tool outputs follow call batch",
+        order
+        == [
+            ("function_call", "call_a"),
+            ("function_call", "call_b"),
+            ("function_call", "call_c"),
+            ("function_call_output", "call_a"),
+            ("function_call_output", "call_b"),
+            ("function_call_output", "call_c"),
+            ("message", None),
+        ],
+        str(order),
+    )
+    check("developer notice moved after outputs", items[-1].get("role") == "developer")
+    check(
+        "tool output repair does not mutate original",
+        body["input"][4].get("type") == "message",
+        str(body["input"]),
+    )
+
+    repaired_again, count_again = _canonicalize_function_call_outputs(repaired)
+    check(
+        "tool output order repair idempotent",
+        count_again == 0 and repaired_again is repaired,
+        f"count={count_again}",
+    )
 
 
 async def _main():
@@ -807,8 +942,12 @@ async def _main():
     test_auth_safety_guard()
     test_auth_injection()
     test_reasoning_gate()
+    test_legacy_tool_search_argument_repair()
+    test_zstd_request_body_decode()
     test_stateful_repair()
     await test_eof_incomplete()
+    await test_failed_error_preserved()
+    test_function_call_output_order_repair()
 
 
 def main():

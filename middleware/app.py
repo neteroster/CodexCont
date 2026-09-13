@@ -7,11 +7,13 @@ so it is safe in front of all traffic.
 from __future__ import annotations
 
 import contextlib
+import io
 import json
 import logging
 from typing import Any
 
 import httpx
+import zstandard as zstd
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response, StreamingResponse
@@ -29,6 +31,34 @@ from .proxy import fold_stream, open_passthrough, open_round
 from .store import IdStore
 
 log = logging.getLogger("middleware.app")
+MAX_DECOMPRESSED_REQUEST_BYTES = 64 * 1024 * 1024
+
+
+class RequestBodyError(ValueError):
+    pass
+
+
+def _decode_request_body(raw: bytes, content_encoding: str | None) -> tuple[bytes, bool]:
+    encodings = [item.strip().lower() for item in (content_encoding or "").split(",") if item.strip()]
+    if not encodings or encodings == ["identity"]:
+        return raw, False
+    if encodings != ["zstd"]:
+        raise RequestBodyError(f"unsupported Content-Encoding: {content_encoding}")
+
+    try:
+        with zstd.ZstdDecompressor().stream_reader(io.BytesIO(raw)) as reader:
+            decoded = reader.read(MAX_DECOMPRESSED_REQUEST_BYTES + 1)
+    except zstd.ZstdError as exc:
+        raise RequestBodyError("invalid zstd request body") from exc
+    if len(decoded) > MAX_DECOMPRESSED_REQUEST_BYTES:
+        raise RequestBodyError("decompressed request body is too large")
+    return decoded, True
+
+
+def _drop_header(headers: dict[str, str], name: str) -> None:
+    for key in list(headers):
+        if key.lower() == name.lower():
+            del headers[key]
 
 
 def _header_base(request: Request) -> str | None:
@@ -118,13 +148,168 @@ def _resolve_passthrough_url(cfg: Config, request: Request) -> str | None:
     return target
 
 
+def _repair_legacy_tool_search_arguments(body: dict[str, Any]) -> tuple[dict[str, Any], int]:
+    """Convert legacy tool_search_call.arguments JSON strings back to objects.
+
+    Older Codex Desktop history can replay tool_search_call.arguments as a JSON
+    string. Current upstream validation expects that specific item type to carry
+    an object, while normal function_call.arguments must remain a string.
+    """
+    input_items = body.get("input")
+    if not isinstance(input_items, list):
+        return body, 0
+
+    repaired_input: list[Any] | None = None
+    repaired = 0
+    for i, item in enumerate(input_items):
+        if not (isinstance(item, dict) and item.get("type") == "tool_search_call"):
+            continue
+        args = item.get("arguments")
+        if not isinstance(args, str):
+            continue
+        try:
+            parsed = json.loads(args)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(parsed, dict):
+            continue
+        if repaired_input is None:
+            repaired_input = list(input_items)
+        new_item = dict(item)
+        new_item["arguments"] = parsed
+        repaired_input[i] = new_item
+        repaired += 1
+
+    if repaired_input is None:
+        return body, 0
+    return {**body, "input": repaired_input}, repaired
+
+
+def _dedupe_tool_namespaces(body: dict[str, Any]) -> int:
+    """Make tool namespace names unique across top-level and input-item tools.
+
+    Codex attaches `tool_search_output` items whose `tools` re-declare
+    namespaces already present in the top-level tool list. OpenAI tolerates
+    that; DeepSeek rejects it with "Duplicate namespace name ..." (HTTP 400).
+    Keep the first declaration, fold later duplicates' tools into it.
+    """
+    kept: dict[str, dict[str, Any]] = {}
+    dropped = 0
+
+    def normalize(container: dict[str, Any]) -> None:
+        nonlocal dropped
+        tools = container.get("tools")
+        if not isinstance(tools, list):
+            return
+        out: list[Any] = []
+        for entry in tools:
+            if not (isinstance(entry, dict) and entry.get("type") == "namespace"):
+                out.append(entry)
+                continue
+            name = entry.get("name")
+            if not isinstance(name, str):
+                out.append(entry)
+                continue
+            first = kept.get(name)
+            if first is None:
+                kept[name] = entry
+                out.append(entry)
+                continue
+            target = first.get("tools")
+            if not isinstance(target, list):
+                target = []
+                first["tools"] = target
+            inner = entry.get("tools")
+            names = {t.get("name") for t in target if isinstance(t, dict)}
+            for tool in inner if isinstance(inner, list) else []:
+                if isinstance(tool, dict) and tool.get("name") not in names:
+                    target.append(tool)
+                    names.add(tool.get("name"))
+            dropped += 1
+        container["tools"] = out
+
+    normalize(body)
+    input_items = body.get("input")
+    if isinstance(input_items, list):
+        for item in input_items:
+            if isinstance(item, dict):
+                normalize(item)
+    return dropped
+
+
+
+def _canonicalize_function_call_outputs(body: dict[str, Any]) -> tuple[dict[str, Any], int]:
+    """Place matching function_call_output items after their call batch.
+
+    DeepSeek's Responses API rejects a request when a developer/hook message
+    sits between a function_call and its matching function_call_output. Codex
+    can emit parallel calls followed by outputs interleaved with notices, so
+    move only the matching outputs and leave every other item in order.
+    """
+    input_items = body.get("input")
+    if not isinstance(input_items, list):
+        return body, 0
+
+    items = list(input_items)
+    repaired = 0
+    i = 0
+    while i < len(items):
+        if not (isinstance(items[i], dict) and items[i].get("type") == "function_call"):
+            i += 1
+            continue
+
+        call_ids: list[str] = []
+        while i < len(items):
+            item = items[i]
+            if not (isinstance(item, dict) and item.get("type") == "function_call"):
+                break
+            call_id = item.get("call_id")
+            if isinstance(call_id, str) and call_id:
+                call_ids.append(call_id)
+            i += 1
+        run_end = i
+        if not call_ids:
+            continue
+
+        wanted = set(call_ids)
+        positions: list[int] = []
+        outputs: list[Any] = []
+        for j in range(run_end, len(items)):
+            item = items[j]
+            if not (
+                isinstance(item, dict)
+                and item.get("type") == "function_call_output"
+                and item.get("call_id") in wanted
+            ):
+                continue
+            positions.append(j)
+            outputs.append(item)
+
+        if not positions:
+            continue
+        if positions == list(range(run_end, run_end + len(positions))):
+            continue
+
+        for pos in reversed(positions):
+            del items[pos]
+        items[run_end:run_end] = outputs
+        repaired += len(outputs)
+        i = run_end + len(outputs)
+
+    if not repaired:
+        return body, 0
+    return {**body, "input": items}, repaired
+
+
 async def _passthrough(
     client: httpx.AsyncClient, cfg: Config, request: Request, raw: bytes, url: str,
-    method: str = "POST",
+    method: str = "POST", decoded_request_body: bool = False,
 ):
     """Pure proxy: forward the raw request and stream the raw response back.
     `method` defaults to POST (the Responses endpoint); other endpoints pass theirs."""
     headers = build_upstream_headers(request.headers.items(), cfg)
+    if decoded_request_body:
+        _drop_header(headers, "content-encoding")
     resp = await open_passthrough(client, url, raw, headers, method=method)
 
     async def body_iter():
@@ -147,7 +332,13 @@ async def handle_responses(request: Request) -> Response:
 
     raw = await request.body()
     try:
-        body: dict[str, Any] = json.loads(raw)
+        decoded_raw, decoded_request_body = _decode_request_body(
+            raw, request.headers.get("content-encoding")
+        )
+    except RequestBodyError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    try:
+        body: dict[str, Any] = json.loads(decoded_raw)
     except (json.JSONDecodeError, UnicodeDecodeError):
         return JSONResponse({"error": "invalid JSON body"}, status_code=400)
     if not isinstance(body, dict):
@@ -175,6 +366,30 @@ async def handle_responses(request: Request) -> Response:
             status_code=400,
         )
 
+    body, legacy_repairs = _repair_legacy_tool_search_arguments(body)
+    model_name = body.get("model")
+    is_deepseek = isinstance(model_name, str) and "deepseek" in model_name.lower()
+    tool_order_repairs = 0
+    if is_deepseek:
+        body, tool_order_repairs = _canonicalize_function_call_outputs(body)
+    namespace_dedup = _dedupe_tool_namespaces(body) if is_deepseek else 0
+
+    forward_raw = decoded_raw
+    if legacy_repairs or tool_order_repairs or namespace_dedup:
+        if legacy_repairs:
+            log.info("repaired legacy tool_search_call.arguments: count=%d", legacy_repairs)
+        if tool_order_repairs:
+            log.info("reordered function_call_output items: count=%d", tool_order_repairs)
+        if namespace_dedup:
+            log.info("dropped duplicate tool namespaces: count=%d", namespace_dedup)
+        forward_raw = json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    if legacy_repairs or namespace_dedup:
+        if legacy_repairs:
+            log.info("repaired legacy tool_search_call.arguments: count=%d", legacy_repairs)
+        if namespace_dedup:
+            log.info("dropped duplicate tool namespaces: count=%d", namespace_dedup)
+        forward_raw = json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+
     # Fold only a streaming, reasoning-enabled request that isn't a collision.
     # Everything else (non-reasoning, non-streaming, continuation disabled, or
     # the agent declaring its own continue_thinking) is a pure passthrough.
@@ -197,7 +412,14 @@ async def handle_responses(request: Request) -> Response:
                else "declares-continue_thinking")
         log.info("passthrough (%s): model=%s path=%s url=%s",
                  why, body.get("model"), request.url.path, url)
-        return await _passthrough(client, cfg, request, raw, url)
+        return await _passthrough(
+            client,
+            cfg,
+            request,
+            forward_raw,
+            url,
+            decoded_request_body=decoded_request_body,
+        )
 
     log.info("fold start: model=%s path=%s url=%s input_items=%d",
              body.get("model"), request.url.path, url, len(body.get("input") or []))
@@ -216,6 +438,8 @@ async def handle_responses(request: Request) -> Response:
         }
 
     headers = build_upstream_headers(request.headers.items(), cfg)
+    if decoded_request_body:
+        _drop_header(headers, "content-encoding")
     payload = build_round_payload(
         body,
         input_items=list(body.get("input") or []),
