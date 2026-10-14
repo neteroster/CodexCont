@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Any, AsyncIterator, Iterator
 
@@ -39,6 +40,9 @@ log = logging.getLogger("middleware.proxy")
 
 _TERMINAL = ("response.completed", "response.failed", "response.incomplete")
 _USAGE_TOP = ("input_tokens", "output_tokens", "total_tokens")
+_SECRET_IN_ERROR = re.compile(
+    r"(?i)(?:bearer\s+|sk-)[A-Za-z0-9._~+/=-]{8,}"
+)
 
 
 async def open_round(
@@ -253,6 +257,21 @@ def _with_proxy_metadata(
     resp["metadata"] = md
 
 
+def _log_failed_error(terminal: dict[str, Any] | None) -> None:
+    if (terminal or {}).get("type") != "response.failed":
+        return
+    response = (terminal or {}).get("response") or {}
+    error = response.get("error")
+    if not isinstance(error, dict):
+        log.warning("upstream response.failed: response_id=%s error=%r",
+                    response.get("id"), error)
+        return
+    message = str(error.get("message") or "")
+    message = _SECRET_IN_ERROR.sub("[REDACTED]", message)[:1000]
+    log.warning("upstream response.failed: response_id=%s type=%s code=%s message=%s",
+                response.get("id"), error.get("type"), error.get("code"), message)
+
+
 def _reconstruct_terminal(
     terminal: dict[str, Any] | None,
     base_response: dict[str, Any] | None,
@@ -273,6 +292,8 @@ def _reconstruct_terminal(
     if usage:
         resp["usage"] = usage
     resp["status"] = tresp.get("status", "completed")
+    if "error" in tresp:
+        resp["error"] = tresp["error"]
     if "incomplete_details" in tresp:
         resp["incomplete_details"] = tresp["incomplete_details"]
     _with_proxy_metadata(resp, rounds, stopped_reason, billed_usage)
@@ -375,6 +396,7 @@ async def fold_stream(
 
                 if t in _TERMINAL:
                     terminal = ev
+                    _log_failed_error(terminal)
                     usage = (ev.get("response") or {}).get("usage")
                     break
 
@@ -534,6 +556,49 @@ async def fold_stream(
                 return
 
             # Clean finish: flush this round's tentative output as the real answer.
+            # Upstream message items carry no `phase`; the UI groups only
+            # phase="commentary" messages into the collapsible work block.
+            # A request whose output includes tool calls is mid-turn work, so
+            # every message in it is commentary; only in a tool-call-free
+            # request does the last message stay phase-less as the final answer.
+            has_tool_calls = any(e["itype"] != "message" for e in out_buffer)
+            msgs = [e for e in out_buffer if e["itype"] == "message"]
+            for e in (msgs if has_tool_calls else msgs[:-1]):
+                if e["item"].get("phase") is None:
+                    e["item"]["phase"] = "commentary"
+                    for chunk_ev in e["events"]:
+                        chunk_item = chunk_ev.get("item")
+                        if isinstance(chunk_item, dict):
+                            chunk_item["phase"] = "commentary"
+            # Claude-family models emit exec_command with a bare `justification`
+            # argument; Codex rejects it unless sandbox_permissions is set, so
+            # drop the field before the client sees the call.
+            def _strip_bare_justification(item):
+                if (isinstance(item, dict) and item.get("type") == "function_call"
+                        and item.get("name") == "exec_command"):
+                    args = item.get("arguments")
+                    if isinstance(args, str):
+                        try:
+                            parsed = json.loads(args)
+                        except json.JSONDecodeError:
+                            return
+                        if "justification" in parsed and "sandbox_permissions" not in parsed:
+                            del parsed["justification"]
+                            item["arguments"] = json.dumps(parsed, ensure_ascii=False)
+            # Headroom lifts tools into a `functions__` namespace for the
+            # upstream model; the name can leak back in function_call items and
+            # Codex's registry rejects it as "unsupported call". Strip it.
+            def _unlift_functions_ns(item):
+                if (isinstance(item, dict) and item.get("type") == "function_call"
+                        and isinstance(item.get("name"), str)
+                        and item["name"].startswith("functions__")):
+                    item["name"] = item["name"][len("functions__"):]
+            for entry in out_buffer:
+                _strip_bare_justification(entry["item"])
+                _unlift_functions_ns(entry["item"])
+                for chunk_ev in entry["events"]:
+                    _strip_bare_justification(chunk_ev.get("item"))
+                    _unlift_functions_ns(chunk_ev.get("item"))
             for entry in out_buffer:
                 for chunk in _flush_entry(entry, ds_oi, seq, cfg):
                     yield chunk
